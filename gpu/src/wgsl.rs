@@ -91,7 +91,8 @@ impl Writer<'_> {
     /// The executor's left fold, `value = f(value + f(weight × input))` from
     /// the bias, with a guard around every inexact product and every addition.
     fn sum(&mut self, bias: f32, terms: &[(f32, usize)]) -> String {
-        let mut accumulated: Option<String> = if bias == 0.0 && !terms.is_empty() { None } else { Some(wgsl_float(bias)) };
+        let mut accumulated: Option<String> =
+            if bias == 0.0 && !terms.is_empty() { None } else { Some(wgsl_float(bias)) };
         for &(weight, position) in terms {
             let operand = self.name(position);
             let magnitude = weight.abs();
@@ -172,7 +173,8 @@ pub fn emit(program: &TensorProgram) -> Shader {
                     None => {
                         let names: Vec<String> =
                             read.candidate_positions.iter().map(|&candidate| writer.name(candidate as usize)).collect();
-                        writeln!(writer.body, "    var c{position} = array<f32, {count}>({});", names.join(", ")).unwrap();
+                        writeln!(writer.body, "    var c{position} = array<f32, {count}>({});", names.join(", "))
+                            .unwrap();
                         format!("c{position}[{clamped}]")
                     }
                 };
@@ -217,7 +219,8 @@ pub fn emit(program: &TensorProgram) -> Shader {
     let mut outputs = String::new();
     for (index, root) in program.roots.iter().enumerate() {
         let position = packed_position(program, *root);
-        writeln!(outputs, "    outputs[record * {}u + {index}u] = {};", program.roots.len(), writer.name(position)).unwrap();
+        writeln!(outputs, "    outputs[record * {}u + {index}u] = {};", program.roots.len(), writer.name(position))
+            .unwrap();
     }
     let code = format!(
         "struct Params {{
@@ -248,13 +251,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
 ",
         body = writer.body,
     );
-    Shader {
-        code,
-        tables: writer.tables,
-        source_size,
-        output_count: program.roots.len(),
-        operation_count,
-    }
+    Shader { code, tables: writer.tables, source_size, output_count: program.roots.len(), operation_count }
 }
 
 fn packed_position(program: &TensorProgram, wire: Wire) -> usize {

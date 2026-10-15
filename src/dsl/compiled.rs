@@ -6,11 +6,11 @@ use std::fmt::Debug;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Once;
 
-use super::{is_wide, with_circuit, Kind, Mux, Scalar, Val, CONTEXT};
+use super::{CONTEXT, Kind, Mux, Scalar, Val, is_wide, with_circuit};
+use crate::Error;
 use crate::circuit::Circuit;
 use crate::tensor::{TensorExecutor, TensorProgram};
 use crate::wire::Wire;
-use crate::Error;
 
 /// What a parameter declares with `#[range(lo, hi)]` and `#[grid(step)]`. A
 /// parameter of a compound type, e.g. `[u8; 4]`, applies them to each scalar.
@@ -399,7 +399,9 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
             self.circuit.validate_source_ranges(&source).map_err(|error| error.to_string())?;
             let actual = R::decode(&mut executor.run(&source).iter().copied());
             if actual != expected {
-                return Err(format!("for inputs {args:?}, the function returns {expected:?} and the circuit {actual:?}"));
+                return Err(format!(
+                    "for inputs {args:?}, the function returns {expected:?} and the circuit {actual:?}"
+                ));
             }
             report.checked += 1;
         }

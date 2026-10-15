@@ -18,12 +18,12 @@ use std::collections::{HashMap, HashSet};
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as Tokens};
-use quote::{format_ident, quote, quote_spanned, ToTokens};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
-    parse_macro_input, parse_quote, BinOp, Block, Expr, ExprIf, ExprMatch, FnArg, Ident, ItemFn, Local, Pat, ReturnType,
-    Stmt, Type, UnOp,
+    BinOp, Block, Expr, ExprIf, ExprMatch, FnArg, Ident, ItemFn, Local, Pat, ReturnType, Stmt, Type, UnOp,
+    parse_macro_input, parse_quote,
 };
 
 #[proc_macro_attribute]
@@ -77,7 +77,8 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         let mut kept = Vec::new();
         for attribute in typed.attrs.drain(..) {
             if attribute.path().is_ident("range") {
-                let bounds = attribute.parse_args_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)?;
+                let bounds =
+                    attribute.parse_args_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)?;
                 if bounds.len() != 2 {
                     return Err(syn::Error::new(attribute.span(), "expected #[range(lo, hi)]"));
                 }
@@ -240,7 +241,9 @@ impl Rewriter {
                 _ => None,
             },
             Expr::Field(field) => match (self.known_type(&field.base)?, &field.member) {
-                (Type::Tuple(tuple), syn::Member::Unnamed(index)) => tuple.elems.iter().nth(index.index as usize).cloned(),
+                (Type::Tuple(tuple), syn::Member::Unnamed(index)) => {
+                    tuple.elems.iter().nth(index.index as usize).cloned()
+                }
                 _ => None,
             },
             _ => None,
@@ -293,9 +296,10 @@ impl Rewriter {
     fn local(&mut self, local: &Local) -> Tokens {
         let span = local.span();
         if let Some(init) = &local.init
-            && let Some((_, diverge)) = &init.diverge {
-                return self.error(diverge.span(), "let-else isn't supported in #[handwired] functions");
-            }
+            && let Some((_, diverge)) = &init.diverge
+        {
+            return self.error(diverge.span(), "let-else isn't supported in #[handwired] functions");
+        }
         let (pattern, annotated) = match &local.pat {
             Pat::Type(typed) => (&*typed.pat, Some((*typed.ty).clone())),
             other => (other, None),
@@ -347,7 +351,9 @@ impl Rewriter {
             Expr::Group(inner) => self.expr(&inner.expr, value, expected),
             Expr::Tuple(tuple) => {
                 let element_types: Vec<Option<Type>> = match expected {
-                    Some(Type::Tuple(types)) if types.elems.len() == tuple.elems.len() => types.elems.iter().cloned().map(Some).collect(),
+                    Some(Type::Tuple(types)) if types.elems.len() == tuple.elems.len() => {
+                        types.elems.iter().cloned().map(Some).collect()
+                    }
                     _ => vec![None; tuple.elems.len()],
                 };
                 let elements: Vec<Tokens> = tuple
@@ -716,8 +722,13 @@ impl Rewriter {
         let vars: Vec<Ident> = names.iter().map(|name| Ident::new(name, span)).collect();
         let indices: Vec<syn::Index> = (0..vars.len()).map(syn::Index::from).collect();
         let (cond, bit, flag) = (self.fresh("cond"), self.fresh("bit"), self.fresh("static"));
-        let (saved, then_vars, then_value, else_vars, else_value) =
-            (self.fresh("saved"), self.fresh("then_vars"), self.fresh("then_value"), self.fresh("else_vars"), self.fresh("else_value"));
+        let (saved, then_vars, then_value, else_vars, else_value) = (
+            self.fresh("saved"),
+            self.fresh("then_vars"),
+            self.fresh("then_value"),
+            self.fresh("else_vars"),
+            self.fresh("else_value"),
+        );
         let branch_value = self.fresh("value");
         quote_spanned!(span=> {
             let #cond = #condition;
@@ -789,7 +800,9 @@ impl Rewriter {
 
 fn wrap_expected(tokens: Tokens, expected: Option<&Type>, span: Span) -> Tokens {
     match expected {
-        Some(ty) => quote_spanned!(span=> ::handwired_rs::dsl::Conv::<<#ty as ::handwired_rs::dsl::HwType>::Val>::conv(#tokens)),
+        Some(ty) => {
+            quote_spanned!(span=> ::handwired_rs::dsl::Conv::<<#ty as ::handwired_rs::dsl::HwType>::Val>::conv(#tokens))
+        }
         None => tokens,
     }
 }
@@ -802,7 +815,10 @@ fn pattern_condition(pattern: &Pat, subject: &Expr, bindings: &mut Vec<Stmt>) ->
         Pat::Lit(literal) => parse_quote!(#subject == #literal),
         Pat::Path(path) => parse_quote!(#subject == #path),
         Pat::Paren(inner) => pattern_condition(&inner.pat, subject, bindings)?,
-        Pat::Ident(ident) if ident.subpat.is_none() && ident.ident.to_string().starts_with(|first: char| first.is_ascii_uppercase()) => {
+        Pat::Ident(ident)
+            if ident.subpat.is_none()
+                && ident.ident.to_string().starts_with(|first: char| first.is_ascii_uppercase()) =>
+        {
             // A const, e.g. `MAX => ...`: the oracle compiled, so this names a value rather than binding one.
             let name = &ident.ident;
             parse_quote!(#subject == #name)

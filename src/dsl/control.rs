@@ -3,9 +3,9 @@
 use std::panic::Location;
 
 use super::ops::integer_table;
-use super::{eq, gt, is_wide, known_bit, settle, with_circuit, IntScalar, Kind, Scalar, Val};
+use super::{IntScalar, Kind, Scalar, Val, eq, gt, is_wide, known_bit, settle, with_circuit};
 use crate::circuit::OutOfRange;
-use crate::emit::{emit_compare, emit_round, Relation};
+use crate::emit::{Relation, emit_compare, emit_round};
 use crate::wire::{Lin, Wire};
 
 /// The build stops here: the macro puts this where a construct can't be

@@ -1,5 +1,7 @@
 # handwired-rs
 
+[![CI](https://github.com/mighty840/handwired-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mighty840/handwired-rs/actions/workflows/ci.yml)
+
 A Rust port of [chenglou/handwired](https://github.com/chenglou/handwired) by Cheng Lou, plus a `#[handwired]` attribute
 that compiles ordinary Rust functions into handwired circuits, and a WebGPU backend.
 
@@ -202,3 +204,7 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   for bit with the CPU reference (skipped without an adapter).
 
 `cargo run --example toggle` builds the switch and prints its size.
+
+CI (`.github/workflows/ci.yml`) runs all of the above on GitHub's Ubuntu runners, with the GPU tests on Mesa's lavapipe
+software Vulkan (it fails rather than skips if no adapter appears), runs the search example, and checks `cargo fmt`,
+`clippy -D warnings` on the libraries, and packaging of the macro crate.

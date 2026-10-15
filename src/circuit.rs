@@ -15,12 +15,12 @@
 
 use std::collections::HashMap;
 
+use crate::Error;
 use crate::numeric::{
-    evaluate_boolean, fround, is_power_of_two_grid, largest_grid, lowest_power_of_two, relu32, smallest_grid, Range,
-    EXACT_GRID_STEPS,
+    EXACT_GRID_STEPS, Range, evaluate_boolean, fround, is_power_of_two_grid, largest_grid, lowest_power_of_two, relu32,
+    smallest_grid,
 };
 use crate::wire::{Lin, Term, Wire};
-use crate::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OpKind {
@@ -483,9 +483,10 @@ impl Circuit {
             read_left_terms = left_terms.clone();
             read_gate_terms = gate_terms.clone();
             if kind == OpKind::Affine
-                && let Some(alias) = identity_wire(&left_terms, left_bias) {
-                    return alias;
-                }
+                && let Some(alias) = identity_wire(&left_terms, left_bias)
+            {
+                return alias;
+            }
             (left_terms, left_bias) = self.compose_affine_terms(&left_terms, left_bias);
             (gate_terms, gate_bias) = self.compose_affine_terms(&gate_terms, gate_bias);
             if kind == OpKind::Reglu && gate_terms.is_empty() {
@@ -506,9 +507,10 @@ impl Circuit {
                 gate_bias = 0.0;
             }
             if kind == OpKind::Affine
-                && let Some(alias) = identity_wire(&left_terms, left_bias) {
-                    return alias;
-                }
+                && let Some(alias) = identity_wire(&left_terms, left_bias)
+            {
+                return alias;
+            }
         } else {
             read_left_terms = left_terms.clone();
             read_gate_terms = gate_terms.clone();
@@ -535,12 +537,16 @@ impl Circuit {
             .map(|&(dependency, _)| self.depths[dependency.index()])
             .max()
             .unwrap_or(0);
-        let constant = if !preserve_rounding && kind == OpKind::Affine && left_terms.is_empty() { Some(left_bias) } else { None };
-        let grid = infer_operation_grid(kind, &left_terms, left_bias, &gate_terms, gate_bias, &self.grids, &self.ranges);
+        let constant =
+            if !preserve_rounding && kind == OpKind::Affine && left_terms.is_empty() { Some(left_bias) } else { None };
+        let grid =
+            infer_operation_grid(kind, &left_terms, left_bias, &gate_terms, gate_bias, &self.grids, &self.ranges);
         let left_range = evaluate_affine_range(&left_terms, left_bias, &self.ranges);
         let range = match kind {
             OpKind::Affine => left_range,
-            OpKind::Reglu => multiply_by_relu_range(left_range, evaluate_affine_range(&gate_terms, gate_bias, &self.ranges)),
+            OpKind::Reglu => {
+                multiply_by_relu_range(left_range, evaluate_affine_range(&gate_terms, gate_bias, &self.ranges))
+            }
             _ => Range::new(0.0, 1.0),
         };
         if !left_terms.is_empty() {
@@ -853,10 +859,19 @@ fn multiply_by_relu_range(left: Range, gate: Range) -> Range {
     if products.iter().any(|product| product.is_nan()) {
         return Range::UNKNOWN;
     }
-    Range::new(products.iter().copied().fold(f64::INFINITY, f64::min), products.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+    Range::new(
+        products.iter().copied().fold(f64::INFINITY, f64::min),
+        products.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    )
 }
 
-fn index_read_range(table: &CandidateTable, index_range: Range, below: OutOfRange, above: OutOfRange, ranges: &[Range]) -> Range {
+fn index_read_range(
+    table: &CandidateTable,
+    index_range: Range,
+    below: OutOfRange,
+    above: OutOfRange,
+    ranges: &[Range],
+) -> Range {
     let count = table.candidates.len() as f64;
     let lowest = index_range.min.floor().min(count).max(-1.0) as i64;
     let highest = index_range.max.floor().min(count).max(-1.0) as i64;
@@ -985,13 +1000,16 @@ mod tests {
         let clamped = circuit.index_read(index, &table, OutOfRange::Clamp);
         let zeroed = circuit.index_read(index, &table, OutOfRange::Zero);
         assert_eq!(circuit.range(zeroed), Range::new(0.0, 60.0));
-        for (input, expected_clamped, expected_zero) in [(2.5, 28.0, 28.0), (1.0, 44.0, 44.0), (-1.0, 28.0, 0.0), (7.0, 60.0, 0.0)] {
+        for (input, expected_clamped, expected_zero) in
+            [(2.5, 28.0, 28.0), (1.0, 44.0, 44.0), (-1.0, 28.0, 0.0), (7.0, 60.0, 0.0)]
+        {
             let values = circuit.evaluate_reference(&[input]).unwrap();
             assert_eq!(values[clamped.index()], expected_clamped);
             assert_eq!(values[zeroed.index()], expected_zero);
         }
         // A constant index selects while building.
-        let constant_index = circuit.index_read_affine(Lin::constant(3.0), &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
+        let constant_index =
+            circuit.index_read_affine(Lin::constant(3.0), &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
         assert_eq!(constant_index, table[3]);
     }
 

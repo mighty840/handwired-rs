@@ -5,8 +5,8 @@
 
 use std::time::Instant;
 
-use handwired_rs::handwired;
 use handwired_rs::TensorExecutor;
+use handwired_rs::handwired;
 use handwired_rs_gpu::{Gpu, GpuBatch};
 
 const TEXT: usize = 32;
@@ -86,5 +86,8 @@ fn main() {
     println!("{records} records, {found} contain their pattern; every result matches the function");
     println!("plain Rust:           {native_time:>10.1?}");
     println!("CPU tensor executor:  {cpu_time:>10.1?}  (one thread)");
-    println!("GPU ({}, {:?}): {gpu_time:>10.1?}  (upload, run, read back; shader built once in {shader_time:.1?})", gpu.info.name, gpu.info.device_type);
+    println!(
+        "GPU ({}, {:?}): {gpu_time:>10.1?}  (upload, run, read back; shader built once in {shader_time:.1?})",
+        gpu.info.name, gpu.info.device_type
+    );
 }

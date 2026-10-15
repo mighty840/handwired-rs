@@ -3,13 +3,14 @@
 
 mod common;
 
-use common::{step_f32, Rng};
+use common::{Rng, step_f32};
 use handwired_rs::{
-    emit_compare_with, emit_maximum_exact, emit_minimum, emit_minimum_exact, Circuit, CompareOptions, Relation,
-    RoundingPointKind, Wire,
+    Circuit, CompareOptions, Relation, RoundingPointKind, Wire, emit_compare_with, emit_maximum_exact, emit_minimum,
+    emit_minimum_exact,
 };
 
-const RELATIONS: [Relation; 5] = [Relation::Greater, Relation::AtLeast, Relation::Less, Relation::AtMost, Relation::Equal];
+const RELATIONS: [Relation; 5] =
+    [Relation::Greater, Relation::AtLeast, Relation::Less, Relation::AtMost, Relation::Equal];
 
 fn two_operands(min: f64, max: f64, grid: Option<f64>) -> (Circuit, Wire, Wire) {
     let mut circuit = Circuit::new(2);
@@ -144,12 +145,19 @@ fn constant_thresholds_fold_into_the_bias() {
             circuit.assume_grid(x, step);
         }
         let three = circuit.constant(3.0);
-        let bits: Vec<Wire> =
-            RELATIONS.iter().map(|&relation| emit_compare_with(&mut circuit, x, relation, three, CompareOptions::default())).collect();
+        let bits: Vec<Wire> = RELATIONS
+            .iter()
+            .map(|&relation| emit_compare_with(&mut circuit, x, relation, three, CompareOptions::default()))
+            .collect();
         for value in -100..=100 {
             let values = circuit.evaluate_reference(&[value as f32]).unwrap();
             for (&relation, bit) in RELATIONS.iter().zip(&bits) {
-                assert_eq!(values[bit.index()] == 1.0, relation.holds(value as f32, 3.0), "{value} {}", relation.symbol());
+                assert_eq!(
+                    values[bit.index()] == 1.0,
+                    relation.holds(value as f32, 3.0),
+                    "{value} {}",
+                    relation.symbol()
+                );
             }
         }
     }

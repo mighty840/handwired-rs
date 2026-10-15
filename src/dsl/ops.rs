@@ -8,9 +8,9 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Sub};
 use std::panic::Location;
 
-use super::{is_wide, known_bit, settle, with_circuit, Kind, Num, Scalar, Val};
+use super::{Kind, Num, Scalar, Val, is_wide, known_bit, settle, with_circuit};
 use crate::circuit::{Circuit, OutOfRange};
-use crate::emit::{emit_and, emit_compare, emit_or, Relation};
+use crate::emit::{Relation, emit_and, emit_compare, emit_or};
 use crate::numeric::lowest_power_of_two;
 use crate::wire::{Lin, Wire};
 
@@ -166,7 +166,8 @@ pub(crate) fn integer_table<T: Scalar>(value: Val<T>, at: &Location, f: impl Fn(
     let results: Vec<i64> = (low..=high).map(f).collect();
     with_circuit(|circuit| {
         let table: Vec<Wire> = results.iter().map(|&result| circuit.constant(result as f64)).collect();
-        let read = circuit.index_read_affine(value.wire - low as f64, &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
+        let read =
+            circuit.index_read_affine(value.wire - low as f64, &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
         circuit.assume_grid_allowing_readers(read, 1.0);
         number(circuit, read, at)
     })
@@ -273,7 +274,10 @@ impl<T: Num> Val<T> {
     #[track_caller]
     fn wrap(self, value: Val<T>) -> Val<T> {
         let at = Location::caller();
-        assert!(T::KIND == Kind::Int && !is_wide::<T>(), "{at}: wrapping arithmetic is supported on integers up to 16 bits");
+        assert!(
+            T::KIND == Kind::Int && !is_wide::<T>(),
+            "{at}: wrapping arithmetic is supported on integers up to 16 bits"
+        );
         // Subtract the span once per threshold the value can cross, e.g. 256 × [x >= 256] for a u8 sum.
         let span = T::MAX - T::MIN + 1.0;
         let range = with_circuit(|circuit| circuit.range(value.wire));

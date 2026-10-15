@@ -27,9 +27,10 @@ use crate::wire::Wire;
 
 pub use compiled::{Attrs, Compiled, HwType, Inputs, Params, Report, Rng};
 pub use control::{
-    cast, if_else, index, placeholder, store, unsupported, Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify,
+    Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
+    placeholder, store, unsupported,
 };
-pub use ops::{and, eq, ge, gt, le, lt, ne, or, Cmp, Logic};
+pub use ops::{Cmp, Logic, and, eq, ge, gt, le, lt, ne, or};
 
 thread_local! {
     static CONTEXT: RefCell<Option<Circuit>> = const { RefCell::new(None) };
@@ -39,7 +40,8 @@ thread_local! {
 pub(crate) fn with_circuit<R>(f: impl FnOnce(&mut Circuit) -> R) -> R {
     CONTEXT.with(|context| {
         let mut context = context.borrow_mut();
-        let circuit = context.as_mut().expect("handwired values can only be used while a #[handwired] circuit is built");
+        let circuit =
+            context.as_mut().expect("handwired values can only be used while a #[handwired] circuit is built");
         f(circuit)
     })
 }

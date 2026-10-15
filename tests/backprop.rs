@@ -36,7 +36,10 @@ fn boolean_atoms_need_an_explicit_gradient_rule() {
     circuit.assume_range(score, 0.0, 1.0);
     let bit = circuit.boolean(score);
     let doubled = circuit.affine(bit * 2.0);
-    assert!(matches!(gradients_of(&circuit, &[0.7], doubled, BackpropOptions::default()), Err(Error::BooleanGradient { .. })));
+    assert!(matches!(
+        gradients_of(&circuit, &[0.7], doubled, BackpropOptions::default()),
+        Err(Error::BooleanGradient { .. })
+    ));
     let options = BackpropOptions { boolean_gradient: BooleanGradient::StraightThrough, ..Default::default() };
     assert_eq!(gradients_of(&circuit, &[0.7], doubled, options).unwrap()[0], 2.0);
 }
@@ -49,7 +52,10 @@ fn index_reads_route_gradient_to_the_selected_candidate() {
     let table: Vec<Wire> = (1..4).map(|position| circuit.source(position)).collect();
     let read = circuit.index_read(index, &table, OutOfRange::Clamp);
     let source = [1.0, 10.0, 20.0, 40.0];
-    assert!(matches!(gradients_of(&circuit, &source, read, BackpropOptions::default()), Err(Error::IndexGradient { .. })));
+    assert!(matches!(
+        gradients_of(&circuit, &source, read, BackpropOptions::default()),
+        Err(Error::IndexGradient { .. })
+    ));
     let zero = BackpropOptions { index_gradient: IndexGradient::Zero, ..Default::default() };
     assert_eq!(gradients_of(&circuit, &source, read, zero).unwrap(), vec![0.0, 0.0, 1.0, 0.0, 1.0]);
     // A backward difference gives the index read(1) - read(0).

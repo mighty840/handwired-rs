@@ -4,7 +4,11 @@ use handwired_rs::handwired;
 
 /// Float addition isn't associative, so each `+` must round in written order.
 #[handwired]
-fn ordered_sums(#[range(-1e6, 1e6)] a: f32, #[range(-1.0, 1.0)] b: f32, #[range(-1e-3, 1e-3)] c: f32) -> (f32, f32, f32) {
+fn ordered_sums(
+    #[range(-1e6, 1e6)] a: f32,
+    #[range(-1.0, 1.0)] b: f32,
+    #[range(-1e-3, 1e-3)] c: f32,
+) -> (f32, f32, f32) {
     let left = a + b + c;
     let right = a + (b + c);
     let mixed = a * 0.1 - b * c + 3.25;

@@ -46,7 +46,8 @@ fn toggle_step(
 ) -> (bool, bool) {
     let track_left = viewport_width as f32 * 0.5 - 26.0;
     let track_top = viewport_height as f32 * 0.5 - 16.0;
-    let down_inside = down_x >= track_left && down_x < track_left + 52.0 && down_y >= track_top && down_y < track_top + 32.0;
+    let down_inside =
+        down_x >= track_left && down_x < track_left + 52.0 && down_y >= track_top && down_y < track_top + 32.0;
     let up_inside = up_x >= track_left && up_x < track_left + 52.0 && up_y >= track_top && up_y < track_top + 32.0;
     let mut on = on;
     let mut armed = armed;
@@ -70,7 +71,9 @@ fn toggle_matches_its_function() {
     // Presses near the track's edges, where an off-by-one would show.
     for x in [613.984_375f32, 614.0, 640.0, 665.984_375, 666.0] {
         for y in [383.984_375f32, 384.0, 400.0, 415.984_375, 416.0] {
-            for (on, armed, down, up) in [(false, false, true, false), (false, true, false, true), (true, true, true, true)] {
+            for (on, armed, down, up) in
+                [(false, false, true, false), (false, true, false, true), (true, true, true, true)]
+            {
                 let args = (on, armed, 1280, 800, down, x, y, up, x, y, false);
                 assert_eq!(compiled.eval(&args).unwrap(), compiled.oracle(args), "{args:?}");
             }
@@ -103,4 +106,3 @@ fn panicking_inputs_are_skipped() {
     let report = overflowing_circuit().verify(5_000).unwrap();
     assert!(report.checked > 0 && report.skipped > 0, "{report:?}");
 }
-

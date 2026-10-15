@@ -9,10 +9,10 @@
 //! Not yet ported from handwired: lowering one-hot masked sums to gathers, and
 //! recomputing depths after lowering.
 
-use crate::circuit::{resolve_index_position, Circuit, OpKind, OutOfRange};
+use crate::Error;
+use crate::circuit::{Circuit, OpKind, OutOfRange, resolve_index_position};
 use crate::numeric::{evaluate_boolean, relu32};
 use crate::wire::Wire;
-use crate::Error;
 
 #[derive(Clone, Debug)]
 pub struct IndexReadRow {
@@ -114,8 +114,10 @@ impl Circuit {
             for (column, wire) in input_wires.iter().enumerate() {
                 column_by_wire[wire.index()] = column as u32;
             }
-            let gate_count = operation_indices.iter().filter(|&&index| self.operations[index].kind == OpKind::Reglu).count();
-            let index_count = operation_indices.iter().filter(|&&index| self.operations[index].kind == OpKind::Index).count();
+            let gate_count =
+                operation_indices.iter().filter(|&&index| self.operations[index].kind == OpKind::Reglu).count();
+            let index_count =
+                operation_indices.iter().filter(|&&index| self.operations[index].kind == OpKind::Index).count();
             let projection_size = output_size + gate_count + index_count;
             let mut bias = vec![0f32; projection_size];
             let mut projection_terms: Vec<&[(Wire, f64)]> = vec![&[]; projection_size];
@@ -214,10 +216,11 @@ impl Circuit {
             let operation = &self.operations[operation_index];
             pending.extend(operation.left_terms.iter().chain(&operation.gate_terms).map(|&(wire, _)| wire));
             if let Some(read) = &operation.index_read
-                && !visited_tables[read.table] {
-                    visited_tables[read.table] = true;
-                    pending.extend(&self.tables[read.table].candidates);
-                }
+                && !visited_tables[read.table]
+            {
+                visited_tables[read.table] = true;
+                pending.extend(&self.tables[read.table].candidates);
+            }
         }
         live
     }
@@ -236,7 +239,12 @@ impl Circuit {
 
     /// Check that a compiled evaluation reproduces every live value of the
     /// reference evaluator, compared with `==` like handwired's `===`.
-    pub fn validate_tensor_evaluation(&self, source: &[f32], program: &TensorProgram, tensor_values: &[f32]) -> Result<(), String> {
+    pub fn validate_tensor_evaluation(
+        &self,
+        source: &[f32],
+        program: &TensorProgram,
+        tensor_values: &[f32],
+    ) -> Result<(), String> {
         let expected = self.evaluate_unchecked(source);
         for wire in &program.wire_order {
             let (got, want) = (tensor_values[wire.index()], expected[wire.index()]);
@@ -302,11 +310,12 @@ impl<'program> TensorExecutor<'program> {
                 let index = projection[read.index_row as usize] as f64;
                 let below = if read.below_zero { OutOfRange::Zero } else { OutOfRange::Clamp };
                 let above = if read.above_zero { OutOfRange::Zero } else { OutOfRange::Clamp };
-                projection[read.row as usize] = match resolve_index_position(index, read.candidate_positions.len(), below, above) {
-                    -2 => f32::NAN,
-                    -1 => 0.0,
-                    position => values[read.candidate_positions[position as usize] as usize],
-                };
+                projection[read.row as usize] =
+                    match resolve_index_position(index, read.candidate_positions.len(), below, above) {
+                        -2 => f32::NAN,
+                        -1 => 0.0,
+                        position => values[read.candidate_positions[position as usize] as usize],
+                    };
             }
             for (gate, &row) in layer.gate_rows.iter().enumerate() {
                 let gate_value = relu32(projection[layer.output_size + gate]);

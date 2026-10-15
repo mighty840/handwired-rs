@@ -8,7 +8,10 @@
 //! Run with `cargo run --example toggle`.
 #![allow(dead_code)]
 
-use handwired_rs::{emit_and, emit_compare, emit_not, emit_select, event, input, state_bit, Circuit, Relation, SourceTable, TensorProgram, Wire};
+use handwired_rs::{
+    Circuit, Relation, SourceTable, TensorProgram, Wire, emit_and, emit_compare, emit_not, emit_select, event, input,
+    state_bit,
+};
 
 pub const TRACK_WIDTH: f64 = 52.0;
 pub const TRACK_HEIGHT: f64 = 32.0;
@@ -188,9 +191,11 @@ impl ToggleReference {
         }
         let up = last(PointerKind::Up);
         if let Some(up) = up
-            && self.armed && inside(up) {
-                self.on = !self.on;
-            }
+            && self.armed
+            && inside(up)
+        {
+            self.on = !self.on;
+        }
         if up.is_some() || last(PointerKind::Cancel).is_some() {
             self.armed = false;
         }

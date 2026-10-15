@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (CPU and GPU on lavapipe)
+    runs-on: ubuntu-24.04
+    env:
+      # GitHub's runners have no GPU: run the GPU tests on Mesa's software Vulkan,
+      # and fail rather than skip if no adapter shows up.
+      WGPU_ADAPTER_NAME: llvmpipe
+      HANDWIRED_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Mesa's software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: Test
+        run: cargo test --workspace
+      - name: Run the 100,000-record search example
+        run: cargo run --release -p handwired-rs-gpu --example search
+
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --lib -- -D warnings
+
+  package:
+    name: Package the macro crate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package
+        # handwired-rs and handwired-rs-gpu depend on it, so they can only be packaged once it's published.
+        run: cargo package -p handwired-rs-macros

@@ -4,7 +4,7 @@
 mod common;
 
 use common::Rng;
-use handwired_rs::{emit_compare_with, Circuit, CompareOptions, Lin, OutOfRange, Relation, TensorExecutor, Wire};
+use handwired_rs::{Circuit, CompareOptions, Lin, OutOfRange, Relation, TensorExecutor, Wire, emit_compare_with};
 
 const SOURCES: usize = 6;
 

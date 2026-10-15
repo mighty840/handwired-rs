@@ -1,6 +1,6 @@
 //! The GPU reproduces the CPU reference evaluator bit for bit.
 
-use handwired_rs::{emit_compare_with, handwired, Circuit, CompareOptions, Lin, OutOfRange, Relation, Wire};
+use handwired_rs::{Circuit, CompareOptions, Lin, OutOfRange, Relation, Wire, emit_compare_with, handwired};
 use handwired_rs_gpu::{Gpu, GpuBatch, GpuProgram};
 
 struct Rng(u64);
@@ -28,6 +28,8 @@ fn gpu() -> Option<Gpu> {
             eprintln!("GPU: {} ({:?}, {:?})", gpu.info.name, gpu.info.device_type, gpu.info.backend);
             Some(gpu)
         }
+        // CI sets HANDWIRED_REQUIRE_GPU, so a missing adapter fails instead of passing untested.
+        Err(error) if std::env::var_os("HANDWIRED_REQUIRE_GPU").is_some() => panic!("{error}"),
         Err(error) => {
             eprintln!("skipping: {error}");
             None

@@ -190,7 +190,8 @@ impl GpuProgram {
         let device = &gpu.device;
         let workgroups = (records as u32).div_ceil(wgsl::WORKGROUP_SIZE);
         let limit = device.limits().max_compute_workgroups_per_dimension;
-        let (width, height) = if workgroups <= limit { (workgroups.max(1), 1) } else { (limit, workgroups.div_ceil(limit)) };
+        let (width, height) =
+            if workgroups <= limit { (workgroups.max(1), 1) } else { (limit, workgroups.div_ceil(limit)) };
         let params: [u32; 4] = [f32::MIN.to_bits(), records as u32, width * wgsl::WORKGROUP_SIZE, 0];
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("handwired params"),
@@ -225,9 +226,11 @@ impl GpuProgram {
                 wgpu::BindGroupEntry { binding: 3, resource: outputs.as_entire_binding() },
             ],
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("handwired run") });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("handwired run") });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("handwired"), timestamp_writes: None });
+            let mut pass = encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("handwired"), timestamp_writes: None });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(width, height, 1);

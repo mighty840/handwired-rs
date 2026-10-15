@@ -1,6 +1,6 @@
 //! Smoke tests for the smaller builder functions.
 
-use handwired_rs::{emit_clamp_exact, emit_maximum, emit_or, emit_round, Circuit};
+use handwired_rs::{Circuit, emit_clamp_exact, emit_maximum, emit_or, emit_round};
 
 #[test]
 fn round_matches_rust_round_ties_even() {
@@ -38,7 +38,9 @@ fn clamp_exact_returns_an_operand_and_maximum_wins_when_bounds_cross() {
     }
     let clamped = emit_clamp_exact(&mut circuit, value, low, high);
     let larger = emit_maximum(&mut circuit, value, low);
-    for (source, expected) in [([5.3, 0.1, 9.9], 5.3f32), ([-7.7, 0.1, 9.9], 0.1), ([50.5, 0.1, 9.9], 9.9), ([5.0, 9.0, 2.0], 2.0)] {
+    for (source, expected) in
+        [([5.3, 0.1, 9.9], 5.3f32), ([-7.7, 0.1, 9.9], 0.1), ([50.5, 0.1, 9.9], 9.9), ([5.0, 9.0, 2.0], 2.0)]
+    {
         let values = circuit.evaluate_reference(&source).unwrap();
         assert_eq!(values[clamped.index()], expected, "clamp {source:?}");
         assert_eq!(values[larger.index()], source[0].max(source[1]), "max {source:?}");

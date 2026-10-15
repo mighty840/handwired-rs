@@ -4,7 +4,10 @@
 //! its result is exact; see handwired's docs/expressions.md for the cost tables.
 
 use crate::circuit::{Circuit, OpKind, RoundingPointKind};
-use crate::numeric::{fround, largest_grid, lowest_power_of_two, pow2, power_of_two_exponent_at_least, smallest_grid, Range, EXACT_GRID_STEPS};
+use crate::numeric::{
+    EXACT_GRID_STEPS, Range, fround, largest_grid, lowest_power_of_two, pow2, power_of_two_exponent_at_least,
+    smallest_grid,
+};
 use crate::wire::{Lin, Term, Wire};
 
 /// `max(0, value)`.
@@ -31,7 +34,11 @@ pub fn emit_minimum(circuit: &mut Circuit, a: Wire, b: Wire) -> Wire {
     let difference = circuit.round_affine(a - b);
     let positive = emit_relu(circuit, difference);
     let result = circuit.round_affine(a - positive);
-    if circuit.is_non_negative(a) && circuit.is_non_negative(b) && circuit.range(a).is_finite() && circuit.range(b).is_finite() {
+    if circuit.is_non_negative(a)
+        && circuit.is_non_negative(b)
+        && circuit.range(a).is_finite()
+        && circuit.range(b).is_finite()
+    {
         let maximum = fround(circuit.range(a).max);
         circuit.assume_range(result, 0.0, maximum);
     }
@@ -216,8 +223,11 @@ fn largest_partial_sum(terms: &[Term], bias: f64, ranges: &[Range]) -> f64 {
     let (mut minimum, mut maximum, mut largest) = (bias, bias, bias.abs());
     for &(wire, coefficient) in terms {
         let range = ranges[wire.index()];
-        let (low, high) =
-            if coefficient >= 0.0 { (coefficient * range.min, coefficient * range.max) } else { (coefficient * range.max, coefficient * range.min) };
+        let (low, high) = if coefficient >= 0.0 {
+            (coefficient * range.min, coefficient * range.max)
+        } else {
+            (coefficient * range.max, coefficient * range.min)
+        };
         minimum += low;
         maximum += high;
         largest = largest.max(low.abs()).max(high.abs()).max(minimum.abs()).max(maximum.abs());
@@ -251,14 +261,17 @@ fn emit_grid_compare(
         // 0.25..0.75 while every partial sum stays within 2^22 grid steps.
         let score_scale = pow2(-24) / grid;
         let fits = match test {
-            SignTest::Equal => largest_steps(circuit, 1.0, 0.0) <= pow2(22) && largest_steps(circuit, -1.0, 0.0) <= pow2(22),
+            SignTest::Equal => {
+                largest_steps(circuit, 1.0, 0.0) <= pow2(22) && largest_steps(circuit, -1.0, 0.0) <= pow2(22)
+            }
             _ => largest_steps(circuit, 1.0, if test == SignTest::Greater { -1.0 } else { 0.0 }) <= pow2(22),
         };
         if !(fits && score_scale >= smallest_grid() && score_scale <= largest_grid()) {
             return None;
         }
         let mut emit_atom = |circuit: &mut Circuit, sign: f64, offset: f64| {
-            let score = Lin::new(scaled_terms(terms, sign * score_scale), 0.5 + (sign * bias / grid - offset) * pow2(-24));
+            let score =
+                Lin::new(scaled_terms(terms, sign * score_scale), 0.5 + (sign * bias / grid - offset) * pow2(-24));
             let atom = circuit.append(OpKind::Boolean, score, Lin::default(), true, None);
             emitted.push(atom);
             atom
@@ -276,7 +289,8 @@ fn emit_grid_compare(
         // The bit's own sum, 1 - ramp, adds one more step.
         let fits = match test {
             SignTest::Equal => {
-                largest_steps(circuit, 1.0, 0.0) < EXACT_GRID_STEPS && largest_steps(circuit, -1.0, 0.0) < EXACT_GRID_STEPS
+                largest_steps(circuit, 1.0, 0.0) < EXACT_GRID_STEPS
+                    && largest_steps(circuit, -1.0, 0.0) < EXACT_GRID_STEPS
             }
             _ => largest_steps(circuit, -1.0, if test == SignTest::Greater { 1.0 } else { 0.0 }) < EXACT_GRID_STEPS,
         };
@@ -354,13 +368,20 @@ struct Cascade {
 
 impl Cascade {
     /// After clamp stage k, the output is min(limit_k, scale_1 × ... × scale_k × relu(sign × d)).
-    fn emit_clamp_stages(&self, circuit: &mut Circuit, sign: f64, stages: &[CascadeStage], emitted: &mut Vec<Wire>) -> Wire {
+    fn emit_clamp_stages(
+        &self,
+        circuit: &mut Circuit,
+        sign: f64,
+        stages: &[CascadeStage],
+        emitted: &mut Vec<Wire>,
+    ) -> Wire {
         let mut stage_output = self.difference;
         for (index, &CascadeStage { scale, limit }) in stages.iter().enumerate() {
             let (scaled_term, above_limit) = if index == 0 {
                 // The first stage reads the signed difference as written, and keeps only its positive side.
                 let gate: Vec<Term> = vec![(self.difference, sign * self.difference_sign * scale)];
-                let scaled_positive = circuit.append(OpKind::Reglu, Lin::constant(1.0), Lin::new(gate.clone(), 0.0), true, None);
+                let scaled_positive =
+                    circuit.append(OpKind::Reglu, Lin::constant(1.0), Lin::new(gate.clone(), 0.0), true, None);
                 let above_limit = circuit.append(OpKind::Reglu, Lin::constant(1.0), Lin::new(gate, -limit), true, None);
                 emitted.push(scaled_positive);
                 ((scaled_positive, 1.0), above_limit)
@@ -493,7 +514,8 @@ mod tests {
     #[test]
     fn cascade_plan_matches_handwired_comment() {
         // "a bound of 16,384 with liftExponent 149 gives scales 2^10, 2^24, 2^24, 2^24, 2^24, 2^24 and 2^19, all with limit 1"
-        let scales: Vec<f64> = plan_sign_cascade(16_384.0, FULL_LIFT_EXPONENT).iter().map(|stage| stage.scale.log2()).collect();
+        let scales: Vec<f64> =
+            plan_sign_cascade(16_384.0, FULL_LIFT_EXPONENT).iter().map(|stage| stage.scale.log2()).collect();
         assert_eq!(scales, vec![10.0, 24.0, 24.0, 24.0, 24.0, 24.0, 19.0]);
         assert!(plan_sign_cascade(16_384.0, FULL_LIFT_EXPONENT).iter().all(|stage| stage.limit == 1.0));
     }

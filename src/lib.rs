@@ -37,14 +37,14 @@ mod numeric;
 mod tensor;
 mod wire;
 
-pub use cells::{constant, event, input, input_bit, state, state_bit, CellSpec, Policy, SourceTable};
+pub use cells::{CellSpec, Policy, SourceTable, constant, event, input, input_bit, state, state_bit};
 pub use circuit::{
     BackpropOptions, BooleanGradient, CandidateTable, Circuit, IndexGradient, IndexRead, Macro, OpKind, Operation,
     OutOfRange, RoundingPointKind,
 };
 pub use emit::{
-    emit_and, emit_clamp_exact, emit_compare, emit_compare_with, emit_maximum, emit_maximum_exact, emit_minimum,
-    emit_minimum_exact, emit_not, emit_or, emit_relu, emit_round, emit_select, CompareOptions, Relation,
+    CompareOptions, Relation, emit_and, emit_clamp_exact, emit_compare, emit_compare_with, emit_maximum,
+    emit_maximum_exact, emit_minimum, emit_minimum_exact, emit_not, emit_or, emit_relu, emit_round, emit_select,
 };
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;
@@ -53,12 +53,23 @@ pub use wire::{Lin, Term, Wire};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Error {
-    SourceLength { expected: usize, actual: usize },
-    SourceOutOfRange { wire: Wire, value: f64, range: Range },
+    SourceLength {
+        expected: usize,
+        actual: usize,
+    },
+    SourceOutOfRange {
+        wire: Wire,
+        value: f64,
+        range: Range,
+    },
     /// A nonzero gradient reached a boolean atom without `BooleanGradient::StraightThrough`.
-    BooleanGradient { wire: Wire },
+    BooleanGradient {
+        wire: Wire,
+    },
     /// A nonzero gradient reached an index read without an `IndexGradient` rule.
-    IndexGradient { wire: Wire },
+    IndexGradient {
+        wire: Wire,
+    },
 }
 
 impl std::fmt::Display for Error {

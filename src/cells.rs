@@ -11,7 +11,7 @@
 //! and call [`SourceTable::finish`].
 
 use crate::circuit::Circuit;
-use crate::numeric::{is_power_of_two_grid, Range};
+use crate::numeric::{Range, is_power_of_two_grid};
 use crate::wire::Wire;
 
 /// What happens to a cell around an evaluation.
@@ -169,9 +169,10 @@ impl SourceTable {
                 return Err(format!("{} must be exactly 0 or 1, got {value}", cell.name));
             }
             if let Some(grid) = cell.spec.grid
-                && (value / grid).fract() != 0.0 {
-                    return Err(format!("{} must be a multiple of {grid}, got {value}", cell.name));
-                }
+                && (value / grid).fract() != 0.0
+            {
+                return Err(format!("{} must be a multiple of {grid}, got {value}", cell.name));
+            }
         }
         Ok(())
     }

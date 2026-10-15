@@ -19,16 +19,16 @@ fn scripted_trace_matches_reference_and_each_step_takes_effect() {
     // At 1280 × 800 the track spans x 614..666 and y 384..416. (events, expected on, expected armed)
     let trace: Vec<(Vec<PointerEvent>, f32, f32)> = vec![
         (vec![], 0.0, 0.0),
-        (pointer(Down, 640.0, 400.0), 0.0, 1.0),           // a press on the track arms the switch
-        (pointer(Up, 640.0, 400.0), 1.0, 0.0),             // a release on the track while armed flips it on
+        (pointer(Down, 640.0, 400.0), 0.0, 1.0), // a press on the track arms the switch
+        (pointer(Up, 640.0, 400.0), 1.0, 0.0),   // a release on the track while armed flips it on
         (pointer(Down, 630.25, 399.5), 1.0, 1.0),
-        (pointer(Up, 630.25, 399.5), 0.0, 0.0),            // and back off
-        (pointer(Down, 613.984_4, 400.0), 0.0, 0.0),     // 1/64 px left of the track
-        (pointer(Down, 614.0, 384.0), 0.0, 1.0),           // exactly on the left and top edges
-        (pointer(Up, 666.0, 400.0), 0.0, 0.0),             // the right edge is outside, so it only disarms
+        (pointer(Up, 630.25, 399.5), 0.0, 0.0),      // and back off
+        (pointer(Down, 613.984_4, 400.0), 0.0, 0.0), // 1/64 px left of the track
+        (pointer(Down, 614.0, 384.0), 0.0, 1.0),     // exactly on the left and top edges
+        (pointer(Up, 666.0, 400.0), 0.0, 0.0),       // the right edge is outside, so it only disarms
         (pointer(Down, 640.0, 400.0), 0.0, 1.0),
-        (pointer(Cancel, 0.0, 0.0), 0.0, 0.0),             // a cancel disarms
-        (pointer(Up, 640.0, 400.0), 0.0, 0.0),             // so this release doesn't flip
+        (pointer(Cancel, 0.0, 0.0), 0.0, 0.0), // a cancel disarms
+        (pointer(Up, 640.0, 400.0), 0.0, 0.0), // so this release doesn't flip
         (pointer(Down, 665.984_4, 415.984_38), 0.0, 1.0),
         (pointer(Up, 665.984_4, 415.984_38), 1.0, 0.0), // 1/64 px inside the bottom right corner
     ];
@@ -81,7 +81,8 @@ fn random_traces_near_the_edges_match_reference() {
             let events: Vec<PointerEvent> = (0..rng.below(3))
                 .map(|_| {
                     let kind = rng.pick(&kinds);
-                    let (edge_x, edge_y) = (rng.pick(&[left, left + 52.0, left + 26.0]), rng.pick(&[top, top + 32.0, top + 16.0]));
+                    let (edge_x, edge_y) =
+                        (rng.pick(&[left, left + 52.0, left + 26.0]), rng.pick(&[top, top + 32.0, top + 16.0]));
                     PointerEvent { kind, x: near(&mut rng, edge_x) as f32, y: near(&mut rng, edge_y) as f32 }
                 })
                 .collect();
