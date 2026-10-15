@@ -117,6 +117,12 @@ laptop's integrated Radeon (Renoir):
 | CPU tensor executor, one thread | 754 ms |
 | GPU, including upload and read-back | 27 ms |
 
+`cargo run --release -p handwired-rs-gpu --example kv_store` is a fixed-capacity key-value store (16 slots, get, put,
+delete) written as one `#[handwired]` function from the store's state to its next state and the answer. A `get` is hard
+attention: a one-hot match of the key against every slot, multiplied into the values. The example verifies it against
+the function, runs a put/get/delete session through the circuit, and runs 100,000 operations on 100,000 separate stores
+in one GPU dispatch (1,082 operations in 70 layers; 50 ms on the GPU against 6.4 ms for the plain function).
+
 The circuit form doesn't make a program like this faster than native Rust; what it adds is that the same exact
 program is a stack of sparse matrix multiplications with ReLUs, which runs on tensor hardware and is differentiable.
 Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests skip when there is none.

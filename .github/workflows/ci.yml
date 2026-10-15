@@ -27,6 +27,8 @@ jobs:
         run: cargo test --workspace
       - name: Run the 100,000-record search example
         run: cargo run --release -p handwired-rs-gpu --example search
+      - name: Run the key-value store example
+        run: cargo run --release -p handwired-rs-gpu --example kv_store
 
   lint:
     name: Format and clippy
