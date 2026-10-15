@@ -1,0 +1,16 @@
+[package]
+name = "handwired-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Exact f32 circuits from ordinary Rust: a port of chenglou/handwired"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/mighty840/handwired-rs"
+keywords = ["neural-network", "circuit", "differentiable", "webgpu", "proc-macro"]
+categories = ["science", "compilers"]
+
+[dependencies]
+handwired-rs-macros = { path = "macros", version = "0.1.0" }
+
+[workspace]
+members = ["macros", "gpu"]

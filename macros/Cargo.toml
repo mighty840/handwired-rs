@@ -1,0 +1,17 @@
+[package]
+name = "handwired-rs-macros"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/mighty840/handwired-rs"
+keywords = ["neural-network", "circuit", "differentiable", "webgpu", "proc-macro"]
+categories = ["science", "compilers"]
+description = "The #[handwired] attribute: trace a subset of Rust into an exact f32 circuit"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit"] }
