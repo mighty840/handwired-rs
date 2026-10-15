@@ -11,8 +11,8 @@ computing exactly what the ordinary code computes. The ideas, the instruction se
 comparison constructions are handwired's; this crate ports them to Rust and checks itself against handwired's
 published numbers.
 
-**Status:** 0.1, experimental. Written in one session with Claude Code and checked by the tests listed below, on one
-machine. Not reviewed by handwired's author. Read [Limitations](#limitations) before relying on it.
+**Status:** 0.1, experimental, checked by the tests listed below on one machine and in CI. Read
+[Limitations](#limitations) before relying on it.
 
 ```rust
 use handwired_rs::{emit_compare, Circuit, Relation};
