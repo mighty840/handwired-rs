@@ -29,6 +29,10 @@ jobs:
         run: cargo run --release -p handwired-rs-gpu --example search
       - name: Run the key-value store example
         run: cargo run --release -p handwired-rs-gpu --example kv_store
+      - name: Run the UI panel and Game of Life examples
+        run: |
+          cargo run --release --example ui_panel > /dev/null
+          cargo run --release --example life > /dev/null
 
   lint:
     name: Format and clippy

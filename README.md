@@ -209,7 +209,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `gpu/tests/exact.rs`: random circuits, comparisons at their edges and `#[handwired]` batches on the GPU, compared bit
   for bit with the CPU reference (skipped without an adapter).
 
-`cargo run --example toggle` builds the switch and prints its size.
+`cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
+toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262
+operations) through a scripted pointer, and `cargo run --release --example life` runs Conway's Game of Life on a
+24 × 24 torus (6,912 operations in 8 layers); both check every frame against their function and print the frames.
 
 CI (`.github/workflows/ci.yml`) runs all of the above on GitHub's Ubuntu runners, with the GPU tests on Mesa's lavapipe
 software Vulkan (it fails rather than skips if no adapter appears), runs the search example, and checks `cargo fmt`,
