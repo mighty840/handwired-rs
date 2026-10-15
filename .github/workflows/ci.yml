@@ -33,6 +33,7 @@ jobs:
         run: |
           cargo run --release --example ui_panel > /dev/null
           cargo run --release --example life > /dev/null
+          cargo run --release --example fizzbuzz > /dev/null
 
   lint:
     name: Format and clippy
