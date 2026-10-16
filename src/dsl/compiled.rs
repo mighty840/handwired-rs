@@ -417,11 +417,15 @@ impl Drop for ContextGuard {
 
 /// Why [`Compiled::verify`] failed.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum VerifyError {
     /// The circuit and the function disagree on these inputs, each written with `{:?}`.
     Mismatch { inputs: String, function: String, circuit: String },
     /// A sampled input is outside its declared range, e.g. from a custom sampler.
     OutOfRange { inputs: String, error: Error },
+    /// On these inputs the function would run a `while` or `loop` more times than its `#[max_iterations(N)]`,
+    /// where the circuit stops.
+    IterationLimit { inputs: String, message: String },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -431,6 +435,7 @@ impl std::fmt::Display for VerifyError {
                 write!(formatter, "for inputs {inputs}, the function returns {function} and the circuit {circuit}")
             }
             VerifyError::OutOfRange { inputs, error } => write!(formatter, "inputs {inputs}: {error}"),
+            VerifyError::IterationLimit { inputs, message } => write!(formatter, "inputs {inputs}: {message}"),
         }
     }
 }
@@ -443,6 +448,16 @@ pub struct Report {
     pub checked: usize,
     /// Inputs where the function panicked, e.g. on overflow, so any circuit value is allowed.
     pub skipped: usize,
+}
+
+const ITERATION_LIMIT: &str = "more times than its #[max_iterations(";
+
+/// What a `#[handwired]` function's `while` or `loop` calls when it would run more times than its
+/// `#[max_iterations(limit)]`: the circuit stops after `limit` passes, so the function panics, and `verify` reports
+/// the inputs.
+#[track_caller]
+pub fn iteration_limit(limit: usize, at: &str) -> ! {
+    panic!("{at}: this loop would run {ITERATION_LIMIT}{limit})]")
 }
 
 thread_local! {
@@ -737,9 +752,21 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
             QUIET_PANICS.with(|quiet| quiet.set(true));
             let expected = panic::catch_unwind(AssertUnwindSafe(|| (self.oracle)(args.clone())));
             QUIET_PANICS.with(|quiet| quiet.set(false));
-            let Ok(expected) = expected else {
-                report.skipped += 1;
-                continue;
+            let expected = match expected {
+                Ok(expected) => expected,
+                // A loop past its declared limit is where the circuit and the function part, not an allowed panic.
+                Err(payload) => match payload.downcast_ref::<String>() {
+                    Some(message) if message.contains(ITERATION_LIMIT) => {
+                        return Err(VerifyError::IterationLimit {
+                            inputs: format!("{args:?}"),
+                            message: message.clone(),
+                        });
+                    }
+                    _ => {
+                        report.skipped += 1;
+                        continue;
+                    }
+                },
             };
             let source = self.source(args);
             self.circuit

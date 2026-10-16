@@ -80,7 +80,8 @@ integer `& | ^ !`, `<<` and `>>` by a constant or an input value (wrapping like 
 [Bitwise operators](#bitwise-operators);
 `min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
 like Rust); `if`/`else` as a statement or value; `match` with literals, ranges, `|`, guards, tuples, bindings and
-consts; `for` over ranges or arrays that don't depend on the inputs (they unroll); array reads and writes at computed
+consts; `for` over ranges or arrays that don't depend on the inputs (they unroll); `while`, `while let` and `loop`
+with `#[max_iterations(N)]`, see [Loops with a limit](#loops-with-a-limit); array reads and writes at computed
 indices, including nested arrays; calls to other `#[handwired]` functions; `handwired_rs::dsl::running_sums(array)`
 for integers (a loop in the function, a Brent-Kung prefix network of about 2 log2(n) layers in the circuit; call it by
 that path, since the macro treats a bare lowercase call as another `#[handwired]` function); `return`, `break` and `continue` anywhere,
@@ -92,6 +93,35 @@ the recorded one. A loop with `break`/`continue` gets a `halted` bit, and assign
 still runs. Under native conditions, e.g. `if index == 3 { break; }`, exits leave the unrolled loop for real, and
 selects on flags that no input-dependent branch has set fold away, so they cost nothing. A `return` outside input-dependent
 branches and flagged loops also leaves for real.
+
+### Loops with a limit
+
+A circuit runs a fixed number of steps, so a `while`, `while let` or `loop` whose end depends on the inputs declares
+how many passes it may take:
+
+```rust
+#[handwired]
+fn gcd(#[range(1, 255)] a: u8, #[range(1, 255)] b: u8) -> u8 {
+    let (mut a, mut b) = (a, b);
+    #[max_iterations(254)]
+    while a != b {
+        if a > b {
+            a -= b;
+        } else {
+            b -= a;
+        }
+    }
+    a
+}
+```
+
+The circuit's copy is `for _ in 0..254 { if !(a != b) { break; } ... }`, which the `break` machinery above handles:
+each pass costs the body plus its flags, so gcd is 6,345 operations in 2,540 layers, and a tight limit matters. The
+function keeps its loop and counts its passes: one that would start pass N + 1 panics with "this loop would run more
+times than its #[max_iterations(N)]", and `verify` reports those inputs as `VerifyError::IterationLimit` instead of
+skipping them like other panics. `break`, `continue`, early `return`, nesting with `for` and `while let` on enums
+work; labeled loops and `break value` don't. A loop whose condition doesn't depend on the inputs leaves for real once
+it's false, so its limit costs nothing there. The tests run gcd on every pair of u8s and digit sums on every u16.
 
 **Declarations:** `#[range(lo, hi)]` is required on `f32` parameters and on integer types wider than 2^24 (`u32`,
 `i32`, ...), whose values must stay within ±2^24 (the build panics, pointing at the operation, if they may not).
@@ -332,7 +362,7 @@ returns without panicking. Overflow and out-of-bounds indexing panic in Rust, so
 unspecified. `verify()` samples inputs (plus each range's ends); it is a test, not a proof.
 
 **The `#[handwired]` subset.**
-- Not supported: `while`/`loop` (every loop needs bounds that don't depend on the inputs), labeled `break`/`continue`,
+- Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value,
   division or remainder by an input value, integers beyond ±2^24 in bitwise operators, enums whose variants carry data,
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s, and every value must stay within

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `while`, `while let` and `loop` in `#[handwired]` functions with `#[max_iterations(N)]`: the circuit runs a `for`
+  loop over `0..N` that breaks where the loop would end; the function counts its passes and panics via
+  `dsl::iteration_limit` if it would start pass N + 1, which `verify` reports as the new
+  `VerifyError::IterationLimit` instead of skipping. `VerifyError` is now `#[non_exhaustive]` (breaking for
+  exhaustive matches).
+- `let (mut a, mut b) = (x, 0)` in `#[handwired]` functions: each `mut` name in a tuple pattern starts as a circuit
+  value, like a plain `let mut`, so loops and branches can assign it.
+- Integer `if` merges keep their result within the type's range, so loop-carried integers no longer widen every pass.
+
 ## 0.5.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.5.0, handwired-rs-macros 0.3.0
 
 - Integer bitwise operators in `#[handwired]` functions: `&`, `|`, `^`, `!`, `<<`, `>>`, their `op=` forms and

@@ -9,9 +9,11 @@
 //!   functions call it.
 //! - `foo_circuit() -> Compiled<(A, B), R>`: builds and compiles the circuit.
 //!
-//! Rust can't overload comparisons, `&&`/`||`, indexing that returns a new
-//! value, assignment, `if`, `match` or `as`, so those are rewritten into calls
-//! of `handwired_rs::dsl`. Everything else, e.g. `a + b` or `x.min(y)`, stays as
+//! Rust can't overload comparisons, `&&`/`||`, shifts, indexing that returns a
+//! new value, assignment, `if`, `match` or `as`, so those are rewritten into
+//! calls of `handwired_rs::dsl`. A `while` or `loop` declares
+//! `#[max_iterations(N)]` and becomes a `for` loop over `0..N` that breaks
+//! where it would end. Everything else, e.g. `a + b` or `x.min(y)`, stays as
 //! written and resolves to `Val`'s operator impls.
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +29,7 @@ use syn::{
 };
 
 mod derive;
+mod loops;
 
 /// `#[derive(HwType)]`: a struct with named fields of scalars, arrays and other derived structs as a `#[handwired]`
 /// parameter, local or result. It adds `<Name>Hw`, the struct's circuit form, which `#[handwired]` code builds from
@@ -120,14 +123,25 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         ReturnType::Type(_, ty) => (**ty).clone(),
     };
 
+    // `while` and `loop` with #[max_iterations(N)]: a bounded `for` loop in the circuit's copy, a counted loop in
+    // the function, which stays the oracle.
+    let mut hw_block = (*function.block).clone();
+    if let Some(error) = loops::rewrite(&mut hw_block, false).into_iter().reduce(|mut all, error| {
+        all.combine(error);
+        all
+    }) {
+        return Err(error);
+    }
+    loops::rewrite(&mut function.block, true);
+
     let mut rewriter = Rewriter::new(return_type.clone());
     for param in &params {
         rewriter.types.insert(param.name.to_string(), param.ty.clone());
     }
     // An early `return` can't leave the trace, which runs every path: it records its value
     // where no return happened yet, and the function's value picks the recorded one.
-    rewriter.returns = exits(&function.block.stmts).returns;
-    let body = rewriter.block(&function.block, true, Some(&return_type), false);
+    rewriter.returns = exits(&hw_block.stmts).returns;
+    let body = rewriter.block(&hw_block, true, Some(&return_type), false);
     let body = if rewriter.returns {
         quote! {{
             let mut __hw_done: ::handwired_rs::dsl::Val<bool> = ::handwired_rs::dsl::Conv::conv(false);
@@ -388,6 +402,24 @@ impl Rewriter {
                     _ => return self.error(span, "a `let` without a value must bind a plain name"),
                 };
                 quote_spanned!(span=> let mut #name: <#ty as ::handwired_rs::dsl::HwType>::Val = <#ty as ::handwired_rs::dsl::HwType>::zero();)
+            }
+            (None, Some(init)) if matches!(pattern, Pat::Tuple(tuple) if tuple.elems.iter().all(|element| matches!(element, Pat::Ident(ident) if ident.subpat.is_none() && ident.by_ref.is_none()) || matches!(element, Pat::Wild(_)))) =>
+            {
+                // `let (mut a, b) = ..`: bind each name on its own, so each `mut` one starts as a circuit value.
+                let Pat::Tuple(tuple) = pattern else { unreachable!() };
+                let whole = self.fresh("tuple");
+                let mut bindings = vec![quote_spanned!(span=> let #whole = #init;)];
+                for (index, element) in tuple.elems.iter().enumerate() {
+                    let Pat::Ident(ident) = element else { continue };
+                    self.types.remove(&ident.ident.to_string());
+                    let index = syn::Index::from(index);
+                    bindings.push(if ident.mutability.is_some() {
+                        quote_spanned!(span=> let #ident = ::handwired_rs::dsl::Lift::lift(#whole.#index);)
+                    } else {
+                        quote_spanned!(span=> let #ident = #whole.#index;)
+                    });
+                }
+                quote!(#(#bindings)*)
             }
             (None, Some(init)) => {
                 // A mutable binding may take circuit values later, so it starts as one.

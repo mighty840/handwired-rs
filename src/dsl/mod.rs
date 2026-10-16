@@ -29,7 +29,8 @@ use crate::wire::Wire;
 
 pub use bits::{Shift, shl, shr};
 pub use compiled::{
-    Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_scalar, sample_variant,
+    Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_scalar, iteration_limit,
+    sample_variant,
 };
 pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,

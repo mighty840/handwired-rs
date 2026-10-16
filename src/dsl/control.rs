@@ -48,7 +48,13 @@ impl<T: Scalar> Mux for Val<T> {
         with_circuit(|circuit| {
             let (off_range, on_range) = (circuit.range(off.wire), circuit.range(on.wire));
             let wire = circuit.select(bit.wire, off.wire, on.wire);
-            settle(circuit, wire, off_range.min.min(on_range.min), off_range.max.max(on_range.max))
+            // Either side is a T wherever the function doesn't panic, so the result stays in T's range too; this
+            // keeps loop-carried integers, e.g. gcd's `a -= b` over 254 unrolled passes, from widening every pass.
+            let (low, high) = (off_range.min.min(on_range.min), off_range.max.max(on_range.max));
+            match T::KIND {
+                Kind::Float => settle(circuit, wire, low, high),
+                _ => settle(circuit, wire, low.max(T::MIN), high.min(T::MAX)),
+            }
         })
     }
 
