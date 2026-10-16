@@ -16,7 +16,7 @@ cargo add handwired-rs            # the circuit builder, #[handwired] and the CP
 cargo add handwired-rs-gpu        # optional: run compiled programs on a GPU through wgpu
 ```
 
-**Status:** 0.1, experimental, checked by the tests listed below on one machine and in CI. Read
+**Status:** 0.2, experimental, checked by the tests listed below on one machine and in CI. Read
 [Limitations](#limitations) before relying on it.
 
 ```rust
@@ -112,7 +112,7 @@ inexact product and every addition in `max(x, lowest)`, with `lowest` read from 
 can't see through; with those guards turned off, the random-circuit test fails on both drivers. Booleans are written
 as `select(0, 1, score >= 0.5)`, since compilers fold `(score + K) - K`, and every literal is one exact f32. Not
 guarded: GPUs may flush subnormal values (below 2^-126) to zero. Both GPUs tested here do: a subnormal operand reads as
-0, and two values closer than 2^-126 compare equal, as native GPU comparisons do too. The tests check that every
+0, and two values closer than 2^-126 compare equal. The tests check that every
 comparison touching a subnormal value follows that rule, and every other one is exact. WGSL also lets drivers assume
 no NaN or infinity occurs.
 
@@ -125,7 +125,7 @@ laptop (Ryzen with 12 threads, integrated Radeon Renoir):
 | the plain Rust function | 1.5 ms |
 | CPU `TensorExecutor`, one record at a time | 660 ms |
 | CPU `BatchExecutor`, 64 records at a time, one thread | 36 ms |
-| CPU `BatchExecutor`, 12 threads | 13 ms |
+| CPU `BatchExecutor`, 12 threads | 13–15 ms |
 | GPU, including upload and read-back | 30 ms |
 
 `BatchExecutor` keeps each value as a block of 64 records, so every row is a loop the compiler vectorizes (with AVX2
@@ -187,7 +187,7 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 **Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element (gather
 lowering isn't ported), early `return`s chain into deep layer stacks (the search example has 127 layers), and
 integer division by a constant is a table read over the dividend's range (at most 65,536 entries). The search example
-is still about 9x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is exactness, differentiability and a tensor-shaped program, not speed.
+is still about 10x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is exactness, differentiability and a tensor-shaped program, not speed.
 
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values

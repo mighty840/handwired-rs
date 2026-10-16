@@ -1,6 +1,6 @@
 [package]
 name = "handwired-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Exact f32 circuits from ordinary Rust: a port of chenglou/handwired"
 readme = "README.md"

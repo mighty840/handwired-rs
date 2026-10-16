@@ -319,14 +319,14 @@ dependencies = [
 
 [[package]]
 name = "handwired-rs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "handwired-rs-macros",
 ]
 
 [[package]]
 name = "handwired-rs-gpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "handwired-rs",
