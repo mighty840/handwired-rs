@@ -4,6 +4,12 @@
 
 - Prefix networks, ported from handwired: `sklansky_prefix` and `brent_kung_prefix` for any associative combine. At
   1,024 rows, Brent-Kung running totals are 2,036 operations in 18 layers, as handwired's docs state.
+- `Compiled::gradients(&records, output, weights, options)`: the exact backward pass summed over many records with
+  per-record weights, split across all cores. The `balance` example uses it and runs about 2x faster.
+- `Compiled::verify_with(cases, seed, sampler)` checks inputs from a custom sampler, e.g. reachable game states.
+  `verify` now returns a typed `dsl::VerifyError` (`Mismatch` or `OutOfRange`) instead of a `String`.
+- A test that gradients through a read at a computed index, e.g. `params[faction * 2 + stat]`, reach the selected
+  entry.
 - `handwired_rs::dsl::running_sums` for `#[handwired]` functions: running totals of an integer array, a loop in the
   function and a Brent-Kung network in the circuit.
 

@@ -9,7 +9,7 @@ use std::sync::Once;
 use super::{CONTEXT, Kind, Mux, Scalar, Val, is_wide, with_circuit};
 use crate::Error;
 use crate::batch::BatchExecutor;
-use crate::circuit::Circuit;
+use crate::circuit::{BackpropOptions, Circuit};
 use crate::tensor::{TensorExecutor, TensorProgram};
 use crate::wire::Wire;
 
@@ -303,6 +303,28 @@ impl Drop for ContextGuard {
     }
 }
 
+/// Why [`Compiled::verify`] failed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VerifyError {
+    /// The circuit and the function disagree on these inputs, each written with `{:?}`.
+    Mismatch { inputs: String, function: String, circuit: String },
+    /// A sampled input is outside its declared range, e.g. from a custom sampler.
+    OutOfRange { inputs: String, error: Error },
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::Mismatch { inputs, function, circuit } => {
+                write!(formatter, "for inputs {inputs}, the function returns {function} and the circuit {circuit}")
+            }
+            VerifyError::OutOfRange { inputs, error } => write!(formatter, "inputs {inputs}: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     /// Inputs where the circuit matched the function.
@@ -372,6 +394,62 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
             .collect())
     }
 
+    /// The gradient of output `output` (an index into the flattened outputs, e.g. 0 for a single `f32` result) with
+    /// respect to every source cell, summed over `records` with per-record `weights` (all 1 when `None`), e.g.
+    /// dLoss/dOutput for each record. Each record runs the exact reference evaluator and its backward pass; records
+    /// are split across all cores. Cells are in [`Params::encode`] order, one per scalar.
+    pub fn gradients(
+        &self,
+        records: &[Args],
+        output: usize,
+        weights: Option<&[f32]>,
+        options: BackpropOptions,
+    ) -> Result<Vec<f64>, Error>
+    where
+        Args: Sync,
+    {
+        assert!(output < self.outputs.len(), "output {output} is out of range: there are {}", self.outputs.len());
+        if let Some(weights) = weights {
+            assert_eq!(weights.len(), records.len(), "one weight per record");
+        }
+        let output_wire = self.outputs[output];
+        let threads = std::thread::available_parallelism().map_or(1, |count| count.get()).min(records.len().max(1));
+        let chunk = records.len().div_ceil(threads).max(1);
+        let partials: Vec<Result<Vec<f64>, Error>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = records
+                .chunks(chunk)
+                .enumerate()
+                .map(|(chunk_index, chunk_records)| {
+                    scope.spawn(move || {
+                        let mut sums = vec![0f64; Args::CELLS];
+                        let mut seed = vec![0f32; self.circuit.width()];
+                        for (offset, record) in chunk_records.iter().enumerate() {
+                            let weight = weights.map_or(1.0, |weights| weights[chunk_index * chunk + offset]);
+                            if weight == 0.0 {
+                                continue;
+                            }
+                            let values = self.circuit.evaluate_reference(&self.source(record))?;
+                            seed[output_wire.index()] = weight;
+                            let gradients = self.circuit.backpropagate_reference(&values, &seed, options)?;
+                            for (sum, &gradient) in sums.iter_mut().zip(&gradients[..Args::CELLS]) {
+                                *sum += gradient as f64;
+                            }
+                        }
+                        Ok(sums)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|handle| handle.join().expect("a gradient thread panicked")).collect()
+        });
+        let mut total = vec![0f64; Args::CELLS];
+        for partial in partials {
+            for (sum, value) in total.iter_mut().zip(partial?) {
+                *sum += value;
+            }
+        }
+        Ok(total)
+    }
+
     /// Run the reference evaluator, one operation at a time.
     pub fn eval_reference(&self, args: &Args) -> Result<R, Error> {
         let values = self.circuit.evaluate_reference(&self.source(args))?;
@@ -388,11 +466,22 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
     /// the function panics are skipped. Run it in a build with overflow
     /// checks, e.g. a debug build, so that overflow panics as the contract
     /// assumes instead of wrapping.
-    pub fn verify(&self, cases: usize) -> Result<Report, String> {
+    pub fn verify(&self, cases: usize) -> Result<Report, VerifyError> {
         self.verify_seeded(cases, 0x5EED)
     }
 
-    pub fn verify_seeded(&self, cases: usize, seed: u64) -> Result<Report, String> {
+    pub fn verify_seeded(&self, cases: usize, seed: u64) -> Result<Report, VerifyError> {
+        self.verify_with(cases, seed, |rng| Args::sample(rng, self.attrs))
+    }
+
+    /// [`verify`](Self::verify) on inputs from `sample`, e.g. states reached by simulating a game, which uniform
+    /// sampling of every parameter's range rarely hits.
+    pub fn verify_with(
+        &self,
+        cases: usize,
+        seed: u64,
+        mut sample: impl FnMut(&mut Rng) -> Args,
+    ) -> Result<Report, VerifyError> {
         if !cfg!(debug_assertions) {
             eprintln!(
                 "warning: verify in a build without overflow checks: integer overflow wraps in the function instead \
@@ -404,7 +493,7 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
         let mut executor = TensorExecutor::new(&self.program);
         let mut report = Report { checked: 0, skipped: 0 };
         for _ in 0..cases {
-            let args = Args::sample(&mut rng, self.attrs);
+            let args = sample(&mut rng);
             QUIET_PANICS.with(|quiet| quiet.set(true));
             let expected = panic::catch_unwind(AssertUnwindSafe(|| (self.oracle)(args.clone())));
             QUIET_PANICS.with(|quiet| quiet.set(false));
@@ -413,12 +502,16 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
                 continue;
             };
             let source = self.source(&args);
-            self.circuit.validate_source_ranges(&source).map_err(|error| error.to_string())?;
+            self.circuit
+                .validate_source_ranges(&source)
+                .map_err(|error| VerifyError::OutOfRange { inputs: format!("{args:?}"), error })?;
             let actual = R::decode(&mut executor.run(&source).iter().copied());
             if actual != expected {
-                return Err(format!(
-                    "for inputs {args:?}, the function returns {expected:?} and the circuit {actual:?}"
-                ));
+                return Err(VerifyError::Mismatch {
+                    inputs: format!("{args:?}"),
+                    function: format!("{expected:?}"),
+                    circuit: format!("{actual:?}"),
+                });
             }
             report.checked += 1;
         }

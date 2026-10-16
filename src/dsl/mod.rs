@@ -25,7 +25,7 @@ use std::marker::PhantomData;
 use crate::circuit::Circuit;
 use crate::wire::Wire;
 
-pub use compiled::{Attrs, Compiled, HwType, Inputs, Params, Report, Rng};
+pub use compiled::{Attrs, Compiled, HwType, Inputs, Params, Report, Rng, VerifyError};
 pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
     placeholder, store, unsupported,

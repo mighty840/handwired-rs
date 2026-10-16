@@ -11,7 +11,6 @@
 //!
 //! cargo run --release --example balance
 
-use handwired_rs::dsl::Params;
 use handwired_rs::{BackpropOptions, BooleanGradient, IndexGradient, handwired};
 
 const VOLLEYS: usize = 10;
@@ -195,8 +194,6 @@ fn main() {
         compiled.program.layers.len(),
         report.checked
     );
-    let circuit = &compiled.circuit;
-    let margin_wire = compiled.outputs[0];
     // The rolls only reach comparisons, and the gradient for damage and health never passes through one; these
     // rules only let the backward pass run through the comparisons on its way to the dice.
     let options =
@@ -213,8 +210,6 @@ fn main() {
     // smoothed win rate, the mean of sigmoid(margin / T), with T a tenth of the typical margin. Then it moves the
     // stats by the smallest change that would bring all three rates to 50%.
     let training = roll(&mut rng, 16_384);
-    let mut source = Vec::new();
-    let mut seed = vec![0.0f32; circuit.width()];
     // Fights with the same hits change winner at the same stats, so the rates move in steps of a few points and 2%
     // is about as close as they get. The trust radius halves whenever a step doesn't help.
     let (mut radius, mut best, mut best_stats) = (1.0f64, f64::INFINITY, stats);
@@ -244,21 +239,20 @@ fn main() {
             let margins = compiled.run_batch(&fights).unwrap();
             let temperature =
                 0.1 * margins.iter().map(|margin| margin.abs() as f64).sum::<f64>() / margins.len() as f64;
-            for fight in &fights {
-                source.clear();
-                fight.encode(&mut source);
-                let values = circuit.evaluate_reference(&source).unwrap();
-                let sigmoid = 1.0 / (1.0 + (-values[margin_wire.index()] as f64 / temperature).exp());
-                seed[margin_wire.index()] = 1.0;
-                let gradients = circuit.backpropagate_reference(&values, &seed, options).unwrap();
-                seed[margin_wire.index()] = 0.0;
-                // Source cells 0..4 are damage_a, damage_b, health_a and health_b.
-                let weight = sigmoid * (1.0 - sigmoid) / temperature / fights.len() as f64;
-                jacobian[matchup][a * 2 + DAMAGE] += weight * gradients[0] as f64;
-                jacobian[matchup][b * 2 + DAMAGE] += weight * gradients[1] as f64;
-                jacobian[matchup][a * 2 + HEALTH] += weight * gradients[2] as f64;
-                jacobian[matchup][b * 2 + HEALTH] += weight * gradients[3] as f64;
-            }
+            // Each fight's d(smoothed rate)/d(margin) weights the gradient of its margin.
+            let weights: Vec<f32> = margins
+                .iter()
+                .map(|&margin| {
+                    let sigmoid = 1.0 / (1.0 + (-margin as f64 / temperature).exp());
+                    (sigmoid * (1.0 - sigmoid) / temperature / fights.len() as f64) as f32
+                })
+                .collect();
+            let gradients = compiled.gradients(&fights, 0, Some(&weights), options).unwrap();
+            // Source cells 0..4 are damage_a, damage_b, health_a and health_b.
+            jacobian[matchup][a * 2 + DAMAGE] += gradients[0];
+            jacobian[matchup][b * 2 + DAMAGE] += gradients[1];
+            jacobian[matchup][a * 2 + HEALTH] += gradients[2];
+            jacobian[matchup][b * 2 + HEALTH] += gradients[3];
         }
         // Health is measured in tens, so a point of damage and ten of health count alike in "smallest change".
         let scale = [1.0, 10.0];

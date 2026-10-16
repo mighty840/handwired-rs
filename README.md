@@ -238,8 +238,13 @@ Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnorm
 closer than 2^-126 compare equal, matching handwired's `flushSubnormals` executor; anything else is exact. WGSL
 lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU.
 
-**Differentiability.** The reference evaluator has a backward pass, tested on small cases; nothing here trains a
-circuit yet, and there's no export to a deep learning framework.
+**Differentiability.** The reference evaluator has an exact backward pass, on the CPU only.
+`compiled.gradients(&records, output, weights, options)` sums it over many records on every core, and the `balance`
+example tunes a game with it. Comparisons, boolean atoms and index reads are step functions: their inputs get no
+useful gradient, and by default a nonzero gradient reaching a boolean atom or an index is an error rather than a
+silent zero (`BackpropOptions` picks straight-through or zero). A value read at a computed index, e.g.
+`params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. There's no export to a deep
+learning framework.
 
 **Not ported from handwired.** Springs and frame timing, circuit inlining,
 index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON

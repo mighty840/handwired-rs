@@ -123,3 +123,22 @@ fn panicking_inputs_are_skipped() {
     let report = overflowing_circuit().verify(5_000).unwrap();
     assert!(report.checked > 0 && report.skipped > 0, "{report:?}");
 }
+
+#[test]
+fn verify_with_takes_inputs_from_a_sampler() {
+    use handwired_rs::dsl::VerifyError;
+    let compiled = arithmetic_circuit();
+    // Only states a simulation could reach, say: a == b and small c.
+    let mut sampled = 0;
+    let report = compiled
+        .verify_with(500, 1, |rng| {
+            sampled += 1;
+            let a = (rng.next_u64() % 256) as u8;
+            (a, a, (rng.next_u64() % 21) as i16 - 10)
+        })
+        .unwrap();
+    assert_eq!((report.checked, sampled), (500, 500));
+    // A sampler can produce inputs outside the declared ranges, which is reported, not run.
+    let error = compiled.verify_with(10, 1, |_| (0, 0, 5000)).unwrap_err();
+    assert!(matches!(&error, VerifyError::OutOfRange { inputs, .. } if inputs == "(0, 0, 5000)"), "{error}");
+}
