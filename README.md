@@ -131,7 +131,8 @@ pub fn pig_step(state: Pig, #[range(1, 6)] roll: u8, hold: bool) -> Pig {
 
 Field reads and writes, including through computed indices (`board.units[i].health = ...`), struct literals with
 `..base`, and structs as an `if`'s value all work. The derive adds `PigHw`, the struct's circuit form, which `Pig { .. }`
-literals in `#[handwired]` code build.
+literals in `#[handwired]` code build. Tuples implement both `HwType` and `Params`, so with both traits imported, encode a parameter
+tuple as `Params::encode(&args, &mut cells)`.
 
 See [Limitations](#limitations) for what isn't supported.
 
