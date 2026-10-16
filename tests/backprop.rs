@@ -125,3 +125,108 @@ fn batched_gradients_sum_the_per_record_backward_passes() {
     let unweighted = compiled.gradients(&records, 0, None, options).unwrap();
     assert_eq!(unweighted[..6].iter().sum::<f64>(), 3.0 * records.len() as f64);
 }
+
+#[test]
+fn surrogate_gradients_go_through_comparisons_to_their_operands() {
+    use handwired_rs::{CompareOptions, ComparisonGradient, Relation, emit_compare_with};
+    let width = 0.5;
+    let surrogate =
+        BackpropOptions { comparison_gradient: ComparisonGradient::Surrogate { width }, ..Default::default() };
+    let sigmoid = |d: f64| 1.0 / (1.0 + (-d / width).exp());
+    // Integer bits on a grid, a sign cascade without one, and both ending in a boolean atom.
+    for (grid, end_with_boolean) in [(Some(1.0), false), (None, false), (Some(1.0), true), (None, true)] {
+        for relation in [Relation::Greater, Relation::AtLeast, Relation::Less, Relation::AtMost, Relation::Equal] {
+            let mut circuit = Circuit::new(2);
+            let (a, b) = (circuit.source(0), circuit.source(1));
+            for wire in [a, b] {
+                circuit.assume_range(wire, -100.0, 100.0);
+                if let Some(step) = grid {
+                    circuit.assume_grid(wire, step);
+                }
+            }
+            let bit = emit_compare_with(&mut circuit, a, relation, b, CompareOptions { end_with_boolean });
+            for (x, y) in [(3.0f32, 2.0f32), (2.0, 3.0), (5.0, 5.0), (-7.0, 4.0)] {
+                let gradients = gradients_of(&circuit, &[x, y], bit, surrogate).unwrap();
+                // The difference is oriented so the bit holds for d > 0 (or d >= 0, or d == 0).
+                let d = match relation {
+                    Relation::Less | Relation::AtMost => (y - x) as f64,
+                    _ => (x - y) as f64,
+                };
+                let s = sigmoid(d);
+                let slope = if relation == Relation::Equal {
+                    4.0 * s * (1.0 - s) * (1.0 - 2.0 * s) / width
+                } else {
+                    s * (1.0 - s) / width
+                };
+                let (da, db) = match relation {
+                    Relation::Less | Relation::AtMost => (-slope, slope),
+                    _ => (slope, -slope),
+                };
+                let close = |got: f32, want: f64| {
+                    assert!(
+                        (got as f64 - want).abs() <= 1e-6 * want.abs().max(1.0),
+                        "{relation:?} {grid:?} {end_with_boolean}: {got} vs {want}"
+                    )
+                };
+                close(gradients[0], da);
+                close(gradients[1], db);
+            }
+        }
+    }
+}
+
+#[test]
+fn surrogate_gradients_reach_through_max_and_thresholds_in_handwired_code() {
+    use handwired_rs::ComparisonGradient;
+    let compiled = threshold_rule_circuit();
+    compiled.verify(2_000).unwrap();
+    let surrogate =
+        BackpropOptions { comparison_gradient: ComparisonGradient::Surrogate { width: 1.0 }, ..Default::default() };
+    // Exactly, the rule is flat almost everywhere in `health`; the surrogate sees the threshold.
+    let exact = compiled.gradients(&[(10.0, 9.5)], 0, None, BackpropOptions::default()).unwrap();
+    let smooth = compiled.gradients(&[(10.0, 9.5)], 0, None, surrogate).unwrap();
+    assert_eq!(exact[0], 0.0);
+    assert!(smooth[0] < 0.0 && smooth[1] > 0.0, "{smooth:?}");
+    // Far from the threshold, the surrogate fades out too.
+    let far = compiled.gradients(&[(100.0, 1.0)], 0, None, surrogate).unwrap();
+    assert!(far[0].abs() < 1e-30, "{far:?}");
+}
+
+/// 1 when a hit of `damage` takes `health` to 0 or below, else what's left as a fraction.
+#[handwired_rs::handwired]
+fn threshold_rule(#[range(0, 100)] health: f32, #[range(0, 100)] damage: f32) -> f32 {
+    let left = (health - damage).max(0.0);
+    if left <= 0.0 { 1.0 } else { 0.0 }
+}
+
+/// Whether a die roll meets a tunable threshold: the outcome depends on `threshold` only through a comparison.
+#[handwired_rs::handwired]
+fn meets(#[range(1, 7)] threshold: f32, #[range(1, 6)] roll: f32) -> f32 {
+    if roll >= threshold { 1.0 } else { 0.0 }
+}
+
+#[test]
+fn a_threshold_tunes_only_with_surrogate_gradients() {
+    use handwired_rs::ComparisonGradient;
+    let compiled = meets_circuit();
+    compiled.verify(2_000).unwrap();
+    // Tune the threshold until half the rolls meet it, by gradient descent on (rate - 0.5)².
+    let tune = |options: BackpropOptions| -> f32 {
+        let mut threshold = 1.5f32;
+        for _ in 0..200 {
+            let records: Vec<(f32, f32)> = (1..=6).map(|roll| (threshold, roll as f32)).collect();
+            let rate = compiled.run_batch(&records).unwrap().iter().sum::<f32>() / 6.0;
+            let weights = vec![2.0 * (rate - 0.5) / 6.0; 6];
+            let gradient = compiled.gradients(&records, 0, Some(&weights), options).unwrap()[0];
+            threshold = (threshold as f64 - 2.0 * gradient).clamp(1.0, 7.0) as f32;
+        }
+        threshold
+    };
+    // Exactly, the rate is flat in the threshold, so it never moves.
+    assert_eq!(tune(BackpropOptions::default()), 1.5);
+    // With a surrogate it moves until half the rolls (4, 5, 6) meet it.
+    let surrogate =
+        BackpropOptions { comparison_gradient: ComparisonGradient::Surrogate { width: 0.5 }, ..Default::default() };
+    let tuned = tune(surrogate);
+    assert!(tuned > 3.0 && tuned <= 4.0, "{tuned}");
+}

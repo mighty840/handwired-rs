@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `ComparisonGradient::Surrogate { width }` in `BackpropOptions`: comparison bits get the gradient of
+  `sigmoid(d / width)` of their difference in the backward pass, straight to their operands, so thresholds, `if`s on
+  inputs and `max`/`min`/`clamp` can be tuned; the forward values stay exact. Operations record their comparison
+  (`Operation::comparison`), and inlining carries it over. Breaking: `BackpropOptions` gains a field, so build it with
+  `..Default::default()`.
+
 ## 0.3.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.3.0, handwired-rs-macros 0.2.0
 
 - Springs and host timing, ported from handwired: `emit_spring`, `emit_apply_spring_matrix` and

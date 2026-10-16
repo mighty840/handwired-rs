@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::circuit::{Circuit, Macro, OpKind};
+use crate::circuit::{Circuit, Comparison, Macro, OpKind};
 use crate::wire::{Lin, Term, Wire};
 
 impl Circuit {
@@ -109,6 +109,17 @@ impl Circuit {
                 // The mapped operation computes the same values from the mapped operands, so it still holds 0 or 1.
                 if operation.comparison_bit {
                     self.operations[index].comparison_bit = true;
+                }
+                if let Some(comparison) = &operation.comparison {
+                    self.operations[index].comparison = Some(Comparison {
+                        terms: comparison
+                            .terms
+                            .iter()
+                            .map(|&(wire, coefficient)| (map[wire.index()], coefficient))
+                            .collect(),
+                        bias: comparison.bias,
+                        equal: comparison.equal,
+                    });
                 }
             }
             map.push(wire);

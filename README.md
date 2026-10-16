@@ -283,7 +283,11 @@ lets drivers assume there are no NaNs or infinities. There's no backward pass on
 example tunes a game with it. Comparisons, boolean atoms and index reads are step functions: their inputs get no
 useful gradient, and by default a nonzero gradient reaching a boolean atom or an index is an error rather than a
 silent zero (`BackpropOptions` picks straight-through or zero). A value read at a computed index, e.g.
-`params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. There's no export to a deep
+`params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. `BackpropOptions { comparison_gradient:
+ComparisonGradient::Surrogate { width }, .. }` gives comparisons (and so `if`s on inputs, `max`, `min`, `clamp`) a
+gradient anyway: the backward pass treats each comparison bit as `sigmoid(d / width)` of its difference `d`, e.g.
+`a - b`, and sends that slope straight to the operands, while the forward values stay exact. It's what lets a
+threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gradient is zero everywhere. There's no export to a deep
 learning framework.
 
 **Not ported from handwired.** Index-read tables stored as a base and a stride, source-table cell declarations beyond

@@ -46,8 +46,8 @@ mod wire;
 pub use batch::{BatchExecutor, LANES};
 pub use cells::{CellSpec, Policy, SourceTable, constant, event, input, input_bit, state, state_bit};
 pub use circuit::{
-    BackpropOptions, BooleanGradient, CandidateTable, Circuit, IndexGradient, IndexRead, Macro, OneHotGroup, OpKind,
-    Operation, OutOfRange, RoundingPointKind,
+    BackpropOptions, BooleanGradient, CandidateTable, Circuit, Comparison, ComparisonGradient, IndexGradient,
+    IndexRead, Macro, OneHotGroup, OpKind, Operation, OutOfRange, RoundingPointKind,
 };
 pub use emit::{
     CompareOptions, Relation, emit_and, emit_argmax, emit_clamp_exact, emit_compare, emit_compare_with,

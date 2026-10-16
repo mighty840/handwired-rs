@@ -3,7 +3,7 @@
 //! Ported from handwired's `numeric-ui-core.ts`. Each function documents when
 //! its result is exact; see handwired's docs/expressions.md for the cost tables.
 
-use crate::circuit::{Circuit, OpKind, OutOfRange, RoundingPointKind};
+use crate::circuit::{Circuit, Comparison, OpKind, OutOfRange, RoundingPointKind};
 use crate::numeric::{
     EXACT_GRID_STEPS, Range, fround, largest_grid, lowest_power_of_two, pow2, power_of_two_exponent_at_least,
     smallest_grid,
@@ -213,6 +213,7 @@ pub fn emit_compare_with(circuit: &mut Circuit, a: Wire, relation: Relation, b: 
     if bit.index() >= circuit.source_size() {
         let index = bit.index() - circuit.source_size();
         circuit.operations[index].comparison_bit = true;
+        circuit.operations[index].comparison = Some(Comparison { terms, bias, equal: test == SignTest::Equal });
     }
     bit
 }

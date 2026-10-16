@@ -96,6 +96,16 @@ pub struct Operation {
     pub rounding_point: Option<RoundingPointKind>,
     /// Set on the bit that `emit_compare` returns.
     pub comparison_bit: bool,
+    /// On that bit: the comparison it decides, for [`ComparisonGradient::Surrogate`].
+    pub comparison: Option<Comparison>,
+}
+
+/// A comparison bit's test: `d > 0`, `d >= 0` or `d == 0` for the difference `d = bias + Σ coefficient × operand`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comparison {
+    pub terms: Vec<Term>,
+    pub bias: f64,
+    pub equal: bool,
 }
 
 /// Gradient rule at a boolean atom, which is a step function.
@@ -115,10 +125,24 @@ pub enum IndexGradient {
     BackwardDifference,
 }
 
+/// Gradient rule for the bit an [`emit_compare`](crate::emit_compare) returns, a step function of its operands.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub enum ComparisonGradient {
+    /// Differentiate the comparison's operations as built: zero almost everywhere, and a boolean atom inside it
+    /// follows `boolean_gradient`.
+    #[default]
+    Exact,
+    /// Treat the bit as `sigmoid(d / width)` in the backward pass only, where `d` is the comparison's difference,
+    /// e.g. `a - b` for `a > b`; an equality bit as `4 × sigmoid × (1 - sigmoid)`, which peaks at `d = 0`. The
+    /// gradient goes straight to the operands; the forward values stay exact. `width` is in the operands' units.
+    Surrogate { width: f64 },
+}
+
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BackpropOptions {
     pub boolean_gradient: BooleanGradient,
     pub index_gradient: IndexGradient,
+    pub comparison_gradient: ComparisonGradient,
 }
 
 /// Small affine producers with fewer terms than this are copied into the
@@ -495,6 +519,7 @@ impl Circuit {
             index_read: Some(IndexRead { table, below, above, index_range }),
             rounding_point: None,
             comparison_bit: false,
+            comparison: None,
         });
         self.push_wire_metadata(depth + 1, None, None, range);
         for &(read, _) in &read_terms {
@@ -635,6 +660,7 @@ impl Circuit {
             index_read: None,
             rounding_point: if kind == OpKind::Boolean { Some(RoundingPointKind::Boolean) } else { None },
             comparison_bit: false,
+            comparison: None,
         });
         self.push_wire_metadata(depth + 1, constant, grid, range);
         self.expression_wires.insert(key, wire);
@@ -742,6 +768,27 @@ impl Circuit {
             let output_wire = self.source_size + operation_index;
             let output_gradient = gradients[output_wire];
             if output_gradient == 0.0 {
+                continue;
+            }
+            if let (ComparisonGradient::Surrogate { width }, Some(comparison)) =
+                (options.comparison_gradient, &operation.comparison)
+            {
+                assert!(width > 0.0 && width.is_finite(), "a surrogate width must be positive and finite");
+                let difference = comparison.bias
+                    + comparison
+                        .terms
+                        .iter()
+                        .map(|&(wire, coefficient)| coefficient * values[wire.index()] as f64)
+                        .sum::<f64>();
+                let sigmoid = 1.0 / (1.0 + (-difference / width).exp());
+                let slope = if comparison.equal {
+                    4.0 * sigmoid * (1.0 - sigmoid) * (1.0 - 2.0 * sigmoid) / width
+                } else {
+                    sigmoid * (1.0 - sigmoid) / width
+                };
+                let scaled: Vec<Term> =
+                    comparison.terms.iter().map(|&(wire, coefficient)| (wire, coefficient * slope)).collect();
+                accumulate(&mut gradients, &scaled, output_gradient);
                 continue;
             }
             match operation.macro_op {

@@ -196,8 +196,11 @@ fn main() {
     );
     // The rolls only reach comparisons, and the gradient for damage and health never passes through one; these
     // rules only let the backward pass run through the comparisons on its way to the dice.
-    let options =
-        BackpropOptions { boolean_gradient: BooleanGradient::StraightThrough, index_gradient: IndexGradient::Zero };
+    let options = BackpropOptions {
+        boolean_gradient: BooleanGradient::StraightThrough,
+        index_gradient: IndexGradient::Zero,
+        ..Default::default()
+    };
 
     let mut rng = Rng(0xBA1A_4CE5_D1CE_5EED);
     let held_out = roll(&mut rng, 20_000);
