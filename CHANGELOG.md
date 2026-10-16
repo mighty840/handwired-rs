@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `Compiled::broadcast(&mut encoded, arg, &value)`: one argument, e.g. a tuning step's parameters, written into every
+  encoded record and range-checked once; `Params::arg_cells(index)` gives an argument's cells.
 - `ComparisonGradient::RelativeSurrogate { fraction }`: each comparison's width is `fraction` × the span of its
   difference's declared range, so dice and hit-point thresholds in one circuit each get a fitting width.
 - `run_batch` encodes and range-checks records in parallel (about 1.8x faster end to end on 262,144 records), and

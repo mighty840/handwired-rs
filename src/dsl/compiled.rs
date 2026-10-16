@@ -250,12 +250,17 @@ impl HwType for () {
 /// A function's parameter list, as a tuple, with one `Attrs` per parameter.
 pub trait Params: Sized {
     const CELLS: usize;
+    /// The source cells of argument `index`, in [`encode`](Self::encode) order.
+    fn arg_cells(index: usize) -> std::ops::Range<usize>;
     fn encode(&self, out: &mut Vec<f32>);
     fn sample(rng: &mut Rng, attrs: &[Attrs]) -> Self;
 }
 
 impl Params for () {
     const CELLS: usize = 0;
+    fn arg_cells(index: usize) -> std::ops::Range<usize> {
+        panic!("a function without arguments has no argument {index}")
+    }
     fn encode(&self, _: &mut Vec<f32>) {}
     fn sample(_: &mut Rng, _: &[Attrs]) {}
 }
@@ -319,6 +324,12 @@ macro_rules! tuple_params {
     ($(($($name:ident $index:tt),+)),*) => {$(
         impl<$($name: HwType),+> Params for ($($name,)+) {
             const CELLS: usize = 0 $(+ $name::CELLS)+;
+            fn arg_cells(index: usize) -> std::ops::Range<usize> {
+                let sizes = [$($name::CELLS),+];
+                assert!(index < sizes.len(), "argument {index} is out of range: there are {}", sizes.len());
+                let start: usize = sizes[..index].iter().sum();
+                start..start + sizes[index]
+            }
             fn encode(&self, out: &mut Vec<f32>) {
                 $(self.$index.encode(out);)+
             }
@@ -510,6 +521,37 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
         });
         results.into_iter().collect::<Result<(), Error>>()?;
         Ok(EncodedRecords { sources, count: records.len() })
+    }
+
+    /// Write `value` as argument `arg` of every encoded record, checked against that argument's declared ranges, e.g.
+    /// the parameters a tuning step changes while the rest of each record stays. `value` must have the argument's
+    /// type; a different number of cells panics.
+    pub fn broadcast<T: HwType>(&self, records: &mut EncodedRecords, arg: usize, value: &T) -> Result<(), Error> {
+        let cells = Args::arg_cells(arg);
+        let mut encoded = Vec::with_capacity(T::CELLS);
+        value.encode(&mut encoded);
+        assert_eq!(encoded.len(), cells.len(), "argument {arg} has {} cells, the value {}", cells.len(), encoded.len());
+        for (offset, &cell_value) in encoded.iter().enumerate() {
+            let wire = Wire::from_index(cells.start + offset);
+            let range = self.circuit.range(wire);
+            let as_f64 = cell_value as f64;
+            if !(as_f64 >= range.min && as_f64 <= range.max) {
+                return Err(Error::SourceOutOfRange { wire, value: as_f64, range });
+            }
+        }
+        let width = Args::CELLS.max(1);
+        let chunk = records.count.div_ceil(threads_for(records.count)).max(1);
+        std::thread::scope(|scope| {
+            for chunk_sources in records.sources.chunks_mut(chunk * width) {
+                let (cells, encoded) = (cells.clone(), &encoded);
+                scope.spawn(move || {
+                    for source in chunk_sources.chunks_mut(width) {
+                        source[cells.clone()].copy_from_slice(encoded);
+                    }
+                });
+            }
+        });
+        Ok(())
     }
 
     /// Run the compiled program on records encoded by [`encode_records`](Self::encode_records).

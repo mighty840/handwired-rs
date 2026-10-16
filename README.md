@@ -173,7 +173,9 @@ laptop (Ryzen with 12 threads, integrated Radeon Renoir):
 when the CPU has it, picked at run time), and every lane repeats the one-record arithmetic in the same order: the
 results are bit for bit those of `TensorExecutor`. `Compiled::run_batch` runs it on typed records across all cores,
 encoding and range-checking them in parallel too; `encode_records` once and `run_encoded` / `gradients_encoded` many
-times reuses records across tuning steps.
+times reuses records across tuning steps, and `broadcast(&mut encoded, arg, &value)` rewrites one argument, e.g. the
+parameters a step changes, in every record (3.5 ms for 12 of 34 cells in 262,144 records, against 11–19 ms to encode
+again).
 
 `cargo run --release -p handwired-rs-gpu --example kv_store` is a fixed-capacity key-value store (16 slots, get, put,
 delete) written as one `#[handwired]` function from the store's state to its next state and the answer. A `get` is hard

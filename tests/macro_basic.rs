@@ -199,3 +199,43 @@ fn encoded_records_run_and_differentiate_like_the_records() {
     bad[4_321].0[1] = 500.0;
     assert!(matches!(compiled.encode_records(&bad), Err(handwired_rs::Error::SourceOutOfRange { .. })));
 }
+
+/// A tuning-shaped function: shared parameters, then a per-record roll.
+#[handwired]
+fn tuned_hit(#[ranges([(1, 20), (1, 6)])] params: [f32; 2], #[range(1, 6)] roll: u8) -> f32 {
+    if roll as f32 >= params[1] { params[0] } else { 0.0 }
+}
+
+#[test]
+fn broadcast_rewrites_one_argument_of_every_encoded_record() {
+    use handwired_rs::BackpropOptions;
+    use handwired_rs::dsl::Params;
+    let compiled = tuned_hit_circuit();
+    assert_eq!((<([f32; 2], u8)>::arg_cells(0), <([f32; 2], u8)>::arg_cells(1)), (0..2, 2..3));
+    let rolls: Vec<u8> = (0..10_000).map(|n| 1 + (n % 6) as u8).collect();
+    let records = |params: [f32; 2]| -> Vec<([f32; 2], u8)> { rolls.iter().map(|&roll| (params, roll)).collect() };
+    let mut encoded = compiled.encode_records(&records([5.0, 4.0])).unwrap();
+    for params in [[7.5f32, 3.0], [2.0, 5.5], [19.0, 1.0]] {
+        compiled.broadcast(&mut encoded, 0, &params).unwrap();
+        let fresh = compiled.encode_records(&records(params)).unwrap();
+        assert_eq!(encoded.sources(), fresh.sources());
+        assert_eq!(compiled.run_encoded(&encoded), compiled.run_batch(&records(params)).unwrap());
+        let options = BackpropOptions::default();
+        assert_eq!(
+            compiled.gradients_encoded(&encoded, 0, None, options).unwrap(),
+            compiled.gradients(&records(params), 0, None, options).unwrap()
+        );
+    }
+    // Out of the argument's ranges: refused, and the records keep their values.
+    let before = encoded.sources().to_vec();
+    assert!(matches!(
+        compiled.broadcast(&mut encoded, 0, &[25.0f32, 3.0]),
+        Err(handwired_rs::Error::SourceOutOfRange { .. })
+    ));
+    assert_eq!(encoded.sources(), &before[..]);
+    // A value of the wrong size panics.
+    let wrong = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compiled.broadcast(&mut encoded, 0, &[1.0f32, 2.0, 3.0])
+    }));
+    assert!(wrong.is_err());
+}
