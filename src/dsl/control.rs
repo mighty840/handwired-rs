@@ -80,7 +80,7 @@ pub trait Placeholder: Copy {
 }
 impl<T: Scalar> Placeholder for Val<T> {
     fn placeholder() -> Val<T> {
-        Val::constant(T::from_f64(0.0))
+        Val::constant(T::default_value())
     }
 }
 impl Placeholder for () {

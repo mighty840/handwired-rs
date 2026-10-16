@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `#[derive(HwType)]` on enums whose variants carry no data (handwired-rs-macros): the enum is a scalar, its
+  discriminant in one cell, declared as the discriminants' range and sampled only as real variants. `match` on it,
+  `==`/`!=`, ordering with a derived `PartialOrd`, `as` casts to integers, enum fields, arrays of enums at computed
+  indices and enum results work in `#[handwired]` functions.
+- `matches!(x, pattern if guard)` and `if let pattern = x { .. } else { .. }` in `#[handwired]` functions, lowered
+  like `match`, so they work on enums, integers, tuples and bindings.
+- `Scalar` no longer requires `PartialOrd`, and gains `default_value()` (an enum's first variant). `dsl::declare_scalar`,
+  `dsl::sample_variant` and `dsl::compare_native` are public for the derive.
+
 ## 0.4.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.4.0 (handwired-rs-macros stays 0.2.0)
 
 - `verify`, `verify_seeded` and `verify_with` check their samples on every core: one `verify(20,000)` of a

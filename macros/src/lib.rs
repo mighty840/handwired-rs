@@ -32,6 +32,10 @@ mod derive;
 /// parameter, local or result. It adds `<Name>Hw`, the struct's circuit form, which `#[handwired]` code builds from
 /// `Name { ... }` literals. Fields take `#[range(lo, hi)]`, `#[ranges([...])]` and `#[grid(step)]`. The struct also
 /// needs `Clone`, `Copy`, `Debug` and `PartialEq` to be a parameter or result.
+///
+/// On an enum whose variants carry no data it makes the enum a scalar, its discriminant in one cell, for `match`,
+/// `matches!`, `if let`, `==` and `as` in `#[handwired]` code. The enum needs `Clone`, `Copy`, `Debug` and
+/// `PartialEq`, plus `PartialOrd` for `<` and friends.
 #[proc_macro_derive(HwType, attributes(range, ranges, grid))]
 pub fn derive_hw_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -314,6 +318,16 @@ impl Rewriter {
         let count = block.stmts.len();
         for (index, statement) in block.stmts.iter().enumerate() {
             let is_tail = index + 1 == count;
+            // A macro in statement position, e.g. a tail `matches!(..)`, is handled as the expression it is.
+            let as_expression;
+            let statement = match statement {
+                Stmt::Macro(mac) => {
+                    let expr = Expr::Macro(syn::ExprMacro { attrs: mac.attrs.clone(), mac: mac.mac.clone() });
+                    as_expression = Stmt::Expr(expr, mac.semi_token);
+                    &as_expression
+                }
+                statement => statement,
+            };
             statements.push(match statement {
                 Stmt::Local(local) => self.local(local),
                 Stmt::Expr(expr, None) if is_tail && value && diverges(expr) => {
@@ -473,6 +487,17 @@ impl Rewriter {
                 let member = &field.member;
                 quote_spanned!(span=> #base.#member)
             }
+            Expr::If(ExprIf { cond, then_branch, else_branch, .. }) if matches!(**cond, Expr::Let(_)) => {
+                // `if let p = e { a } else { b }` is `match e { p => { a } _ => { b } }`.
+                let Expr::Let(binding) = &**cond else { unreachable!() };
+                let (pattern, scrutinee) = (&binding.pat, &binding.expr);
+                let otherwise: Expr = match else_branch {
+                    Some((_, otherwise)) => (**otherwise).clone(),
+                    None => parse_quote!({}),
+                };
+                let lowered: ExprMatch = parse_quote!(match #scrutinee { #pattern => #then_branch, _ => #otherwise });
+                self.match_expr(&lowered, value, expected)
+            }
             Expr::If(if_expr) => self.if_expr(if_expr, value, expected),
             Expr::Match(match_expr) => self.match_expr(match_expr, value, expected),
             Expr::Block(block) => {
@@ -605,8 +630,36 @@ impl Rewriter {
                 quote_spanned!(span=> &#mutability #operand)
             }
             Expr::Closure(_) => self.error(span, "closures aren't supported in #[handwired] functions"),
+            Expr::Macro(mac) if mac.mac.path.is_ident("matches") => {
+                // `matches!(e, p if g)` is `match e { p if g => true, _ => false }`.
+                let parsed = mac.mac.parse_body_with(|input: syn::parse::ParseStream| {
+                    let scrutinee: Expr = input.parse()?;
+                    input.parse::<syn::Token![,]>()?;
+                    let pattern = Pat::parse_multi_with_leading_vert(input)?;
+                    let guard = if input.peek(syn::Token![if]) {
+                        input.parse::<syn::Token![if]>()?;
+                        Some(input.parse::<Expr>()?)
+                    } else {
+                        None
+                    };
+                    let _ = input.parse::<Option<syn::Token![,]>>()?;
+                    Ok((scrutinee, pattern, guard))
+                });
+                let (scrutinee, pattern, guard) = match parsed {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        self.errors.push(error);
+                        return quote!(());
+                    }
+                };
+                let guard = guard.map(|guard| quote!(if #guard));
+                let lowered: ExprMatch = parse_quote!(match #scrutinee { #pattern #guard => true, _ => false });
+                self.match_expr(&lowered, value, expected)
+            }
             Expr::Macro(_) => self.error(span, "macros aren't supported inside #[handwired] functions"),
-            Expr::Let(_) => self.error(span, "`if let` isn't supported in #[handwired] functions"),
+            Expr::Let(_) => {
+                self.error(span, "`let` is only supported directly in an `if let` in #[handwired] functions")
+            }
             Expr::Struct(structure) => {
                 // `State { .. }` builds the circuit form, `StateHw`, which #[derive(HwType)] adds.
                 if structure.qself.is_some() {

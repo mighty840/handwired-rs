@@ -133,7 +133,8 @@ fn f32_at_least(value: f64) -> f64 {
     (if (rounded as f64) < value { rounded.next_up() } else { rounded }) as f64
 }
 
-fn declare_scalar<T: Scalar>(inputs: &mut Inputs, attrs: &Attrs) -> Val<T> {
+/// Declare one scalar parameter cell: its range, and for integers and enums a grid of 1.
+pub fn declare_scalar<T: Scalar>(inputs: &mut Inputs, attrs: &Attrs) -> Val<T> {
     let (low, high) = scalar_range::<T>(attrs);
     if T::KIND == Kind::Int {
         assert!(low > -16_777_216.0 && high < 16_777_216.0, "a {} parameter's range must lie within ±2^24", T::NAME);
@@ -177,6 +178,14 @@ fn sample_scalar<T: Scalar>(rng: &mut Rng, attrs: &Attrs) -> T {
         _ => value.round().clamp(low, high),
     };
     T::from_f64(snapped)
+}
+
+/// One of an enum's variants, uniformly, among those within a declared `#[range]`.
+pub fn sample_variant<T: Scalar>(rng: &mut Rng, attrs: &Attrs, variants: &[T]) -> T {
+    let (low, high) = scalar_range::<T>(attrs);
+    let allowed: Vec<T> = variants.iter().copied().filter(|variant| (low..=high).contains(&variant.to_f64())).collect();
+    assert!(!allowed.is_empty(), "no variant of {} lies in #[range({low}, {high})]", T::NAME);
+    allowed[(rng.next_u64() % allowed.len() as u64) as usize]
 }
 
 macro_rules! scalar_types {

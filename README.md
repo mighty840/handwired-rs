@@ -134,6 +134,52 @@ Field reads and writes, including through computed indices (`board.units[i].heal
 literals in `#[handwired]` code build. Tuples implement both `HwType` and `Params`, so with both traits imported, encode a parameter
 tuple as `Params::encode(&args, &mut cells)`.
 
+**Enums.** The same derive on an enum whose variants carry no data makes it a scalar: one cell holding the variant's
+discriminant, declared as the range of its discriminants and sampled only as real variants. `match` on it (paths, bare
+variants after `use Phase::*`, `|`, guards, `_`), `==`, `!=`, `matches!(x, A | B if guard)`, `if let A = x`, `as`
+casts to integers, ordering comparisons (with a derived `PartialOrd`, which orders by discriminant), enum fields,
+arrays of enums read and written at computed indices, and enum results all work. Its circuit form is `Val<Phase>`.
+Each arm costs one equality comparison, which the builder shares between `match`es on the same value.
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, HwType)]
+pub enum Phase { Rolling, Held, Busted, Won }
+
+#[derive(Clone, Copy, Debug, PartialEq, HwType)]
+pub struct Turn {
+    pub phase: Phase,
+    #[range(0, 100)]
+    pub score: u8,
+    #[range(0, 30)]
+    pub pot: u8,
+}
+
+#[handwired]
+pub fn turn_step(turn: Turn, #[range(1, 6)] roll: u8, hold: bool) -> Turn {
+    let mut next = turn;
+    match turn.phase {
+        Phase::Rolling if hold => {
+            next.score = turn.score + turn.pot;
+            next.pot = 0;
+            next.phase = if next.score >= 50 { Phase::Won } else { Phase::Held };
+        }
+        Phase::Rolling => {
+            if roll == 1 {
+                next.pot = 0;
+                next.phase = Phase::Busted;
+            } else {
+                next.pot = turn.pot + roll;
+            }
+        }
+        Phase::Held | Phase::Busted => next.phase = Phase::Rolling,
+        _ => {}
+    }
+    next
+}
+```
+
+Variants with data (`Option<T>`, `Move(u8)`) aren't supported yet.
+
 See [Limitations](#limitations) for what isn't supported.
 
 ## GPU: `handwired-rs-gpu`
@@ -259,8 +305,8 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **The `#[handwired]` subset.**
 - Not supported: `while`/`loop` (every loop needs bounds that don't depend on the inputs), labeled `break`/`continue`,
-  division or remainder by an input value, shifts and integer bitwise operators, enums, generic structs, `Option`, closures,
-  references, generic functions, `if let`, and calls to ordinary (non-`#[handwired]`) functions.
+  division or remainder by an input value, shifts and integer bitwise operators, enums whose variants carry data,
+  generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s, and every value must stay within
   ±2^24, the integers f32 holds exactly. `f32` parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.

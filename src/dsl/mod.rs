@@ -25,14 +25,16 @@ use std::marker::PhantomData;
 use crate::circuit::Circuit;
 use crate::wire::Wire;
 
-pub use compiled::{Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError};
+pub use compiled::{
+    Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_scalar, sample_variant,
+};
 pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
     placeholder, store, unsupported,
 };
 /// `#[derive(HwType)]` on a struct with named fields; see the macros crate.
 pub use handwired_rs_macros::HwType;
-pub use ops::{Cmp, Logic, RunningSum, and, eq, ge, gt, le, lt, ne, or, running_sums};
+pub use ops::{Cmp, Logic, RunningSum, and, compare_native, eq, ge, gt, le, lt, ne, or, running_sums};
 
 thread_local! {
     static CONTEXT: RefCell<Option<Circuit>> = const { RefCell::new(None) };
@@ -55,14 +57,19 @@ pub enum Kind {
     Float,
 }
 
-/// A Rust scalar type a circuit value can stand for.
-pub trait Scalar: Copy + PartialEq + PartialOrd + Debug + 'static {
+/// A Rust scalar type a circuit value can stand for: bool, an integer, f32,
+/// or an enum whose variants carry no data, as its discriminant.
+pub trait Scalar: Copy + PartialEq + Debug + 'static {
     const KIND: Kind;
     const NAME: &'static str;
     const MIN: f64;
     const MAX: f64;
     fn to_f64(self) -> f64;
     fn from_f64(value: f64) -> Self;
+    /// A valid value to start from, e.g. 0 for numbers or an enum's first variant.
+    fn default_value() -> Self {
+        Self::from_f64(0.0)
+    }
 }
 
 /// An integer type whose values can index a table.

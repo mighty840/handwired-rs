@@ -392,6 +392,19 @@ macro_rules! native_comparisons {
 }
 native_comparisons!(bool, u8, u16, u32, u64, usize, i8, i16, i32, i64, f32);
 
+/// A comparison of two native scalars by their numeric values, e.g. an enum's
+/// discriminants, which is how a derived `PartialOrd` orders variants.
+pub fn compare_native<T: Scalar>(left: T, relation: Relation, right: T) -> bool {
+    let (left, right) = (left.to_f64(), right.to_f64());
+    match relation {
+        Relation::Greater => left > right,
+        Relation::AtLeast => left >= right,
+        Relation::Less => left < right,
+        Relation::AtMost => left <= right,
+        Relation::Equal => left == right,
+    }
+}
+
 pub fn gt<A: Cmp<B>, B>(left: A, right: B) -> A::Output {
     left.compare(Relation::Greater, right)
 }
