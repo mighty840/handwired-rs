@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## 0.3.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.3.0, handwired-rs-macros 0.2.0
 
 - Springs and host timing, ported from handwired: `emit_spring`, `emit_apply_spring_matrix` and
   `emit_animated_object` (springs stepped by a host-written matrix and settled together with one exact bit), and the

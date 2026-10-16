@@ -1,6 +1,6 @@
 [package]
 name = "handwired-rs-gpu"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/mighty840/handwired-rs"
@@ -9,7 +9,7 @@ categories = ["science", "compilers"]
 description = "Run handwired circuits as WebGPU compute shaders, bit-exact with the CPU reference"
 
 [dependencies]
-handwired-rs = { path = "..", version = "0.2.0" }
+handwired-rs = { path = "..", version = "0.3.0" }
 wgpu = "=25.0.2"
 pollster = "0.4"
 bytemuck = "1"
