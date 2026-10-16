@@ -66,6 +66,15 @@ pub struct IndexRead {
     pub index_range: Range,
 }
 
+/// Exact bits of which exactly one is 1, or, with `allow_all_zero`, at most one. A promise from the caller, like a
+/// range, checkable with [`Circuit::validate_one_hot_groups`]. Compilation lowers a sum of products of the group's
+/// members with candidate values to a gather: a read of the selected candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OneHotGroup {
+    pub members: Vec<Wire>,
+    pub allow_all_zero: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct CandidateTable {
     pub candidates: Vec<Wire>,
@@ -126,13 +135,14 @@ pub struct Circuit {
     pub(crate) operations: Vec<Operation>,
     depths: Vec<u32>,
     constants: Vec<Option<f64>>,
-    expression_wires: HashMap<Vec<u64>, Wire>,
+    pub(crate) expression_wires: HashMap<Vec<u64>, Wire>,
     pub(crate) ranges: Vec<Range>,
     grids: Vec<Option<f64>>,
     exact_bits: Vec<bool>,
     has_readers: Vec<bool>,
     pub(crate) tables: Vec<CandidateTable>,
     table_by_content: HashMap<Vec<Wire>, usize>,
+    pub(crate) one_hot_groups: Vec<OneHotGroup>,
 }
 
 impl Circuit {
@@ -149,6 +159,7 @@ impl Circuit {
             has_readers: vec![false; source_size],
             tables: Vec::new(),
             table_by_content: HashMap::new(),
+            one_hot_groups: Vec::new(),
         }
     }
 
@@ -265,6 +276,54 @@ impl Circuit {
     pub fn assume_bit(&mut self, wire: Wire) {
         self.assume_range(wire, 0.0, 1.0);
         self.exact_bits[wire.index()] = true;
+    }
+
+    /// Declare that `members` are exact bits of which exactly one is 1, or, with `allow_all_zero`, at most one.
+    /// Narrows every member's range to 0..1, panicking like [`assume_range`](Self::assume_range) when that changes
+    /// a wire that operations already read; declare a group before the code that reads its members. Compilation
+    /// reads every group, including one declared late.
+    pub fn assume_one_hot(&mut self, members: &[Wire], allow_all_zero: bool) {
+        self.declare_one_hot(members, allow_all_zero, false);
+    }
+
+    /// `assume_one_hot` for members that operations already read.
+    pub fn assume_one_hot_allowing_readers(&mut self, members: &[Wire], allow_all_zero: bool) {
+        self.declare_one_hot(members, allow_all_zero, true);
+    }
+
+    fn declare_one_hot(&mut self, members: &[Wire], allow_all_zero: bool, allow_existing_readers: bool) {
+        assert!(!members.is_empty(), "a one-hot group needs at least one member");
+        for (index, &member) in members.iter().enumerate() {
+            self.assert_wire(member);
+            assert!(!members[..index].contains(&member), "one-hot group members must be distinct wires");
+            self.declare_range(member, 0.0, 1.0, allow_existing_readers);
+        }
+        self.one_hot_groups.push(OneHotGroup { members: members.to_vec(), allow_all_zero });
+    }
+
+    pub fn one_hot_groups(&self) -> &[OneHotGroup] {
+        &self.one_hot_groups
+    }
+
+    /// Check evaluated values against every declared one-hot group: each member exactly 0 or 1, and exactly one of
+    /// them 1 (or none, for a group that allows all zeros).
+    pub fn validate_one_hot_groups(&self, values: &[f32]) -> Result<(), String> {
+        for (group_index, group) in self.one_hot_groups.iter().enumerate() {
+            let mut ones = 0;
+            for &member in &group.members {
+                match values[member.index()] {
+                    0.0 => {}
+                    1.0 => ones += 1,
+                    value => {
+                        return Err(format!("one-hot group {group_index}: member {} holds {value}", member.index()));
+                    }
+                }
+            }
+            if ones > 1 || (ones == 0 && !group.allow_all_zero) {
+                return Err(format!("one-hot group {group_index} has {ones} members set"));
+            }
+        }
+        Ok(())
     }
 
     /// Record an operation as a rounding point, e.g. each step of a round chain.
@@ -747,7 +806,13 @@ fn key_number(value: f64) -> u64 {
     (value + 0.0).to_bits()
 }
 
-fn expression_key(kind: OpKind, left_terms: &[Term], left_bias: f64, gate_terms: &[Term], gate_bias: f64) -> Vec<u64> {
+pub(crate) fn expression_key(
+    kind: OpKind,
+    left_terms: &[Term],
+    left_bias: f64,
+    gate_terms: &[Term],
+    gate_bias: f64,
+) -> Vec<u64> {
     let mut key = Vec::with_capacity(4 + 2 * (left_terms.len() + gate_terms.len()));
     key.push(kind as u64);
     key.push(key_number(left_bias));

@@ -142,6 +142,19 @@ pub fn emit(program: &TensorProgram) -> Shader {
                 .map(|entry| (layer.weights[entry], layer.input_indices[layer.columns[entry] as usize] as usize))
                 .collect()
         };
+        for compute in &layer.gather_computes {
+            // Σ position × bit and Σ bit: exact small integers for 0/1 bits, in any order.
+            let bits: Vec<String> = compute.bit_positions.iter().map(|&bit| writer.name(bit as usize)).collect();
+            let index: Vec<String> = bits
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(position, bit)| format!("{} * {bit}", wgsl_float(position as f32)))
+                .collect();
+            let index = if index.is_empty() { "0.0f".to_string() } else { index.join(" + ") };
+            writeln!(writer.body, "    let gi{}: i32 = i32({index});", compute.slot).unwrap();
+            writeln!(writer.body, "    let gm{}: f32 = {};", compute.slot, bits.join(" + ")).unwrap();
+        }
         for row in 0..layer.output_size {
             let position = available + row;
             let bias = layer.bias[row];
@@ -150,6 +163,20 @@ pub fn emit(program: &TensorProgram) -> Shader {
             let boolean = layer.boolean_rows.iter().any(|&boolean_row| boolean_row as usize == row);
             let read = layer.index_reads.iter().find(|read| read.row as usize == row);
             operation_count += 1;
+            if let Some(read) = layer.gather_reads.iter().find(|read| read.row as usize == row) {
+                let count = read.candidate_positions.len();
+                let names: Vec<String> =
+                    read.candidate_positions.iter().map(|&candidate| writer.name(candidate as usize)).collect();
+                writeln!(writer.body, "    var c{position} = array<f32, {count}>({});", names.join(", ")).unwrap();
+                let mut contribution = format!("c{position}[clamp(gi{}, 0i, {}i)]", read.slot, count - 1);
+                if read.masked {
+                    // The mass is 0 or 1, so the product is exact and fusing it into the sum changes nothing.
+                    contribution = format!("(gm{} * {contribution})", read.slot);
+                }
+                writeln!(writer.body, "    let v{position}: f32 = g({} + {contribution});", wgsl_float(bias)).unwrap();
+                writer.values[position] = Some(Value::Computed(position));
+                continue;
+            }
             if let Some(read) = read {
                 let index_terms = terms_of(read.index_row as usize);
                 let index = writer.sum(layer.bias[read.index_row as usize], &index_terms);

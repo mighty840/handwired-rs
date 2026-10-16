@@ -11,7 +11,7 @@
 
 use crate::circuit::{OutOfRange, resolve_index_position};
 use crate::numeric::{evaluate_boolean, relu32};
-use crate::tensor::TensorProgram;
+use crate::tensor::{GatherCompute, GatherRead, TensorProgram, resolve_gather};
 
 /// Records evaluated together.
 pub const LANES: usize = 64;
@@ -28,6 +28,8 @@ struct Layer {
     weights: Vec<f32>,
     gate_rows: Vec<u32>,
     boolean_rows: Vec<u32>,
+    gather_computes: Vec<GatherCompute>,
+    gather_reads: Vec<GatherRead>,
     index_reads: Vec<IndexRead>,
 }
 
@@ -46,6 +48,8 @@ pub struct BatchExecutor<'program> {
     root_positions: Vec<usize>,
     values: Vec<Block>,
     projection: Vec<Block>,
+    gather_indices: Vec<[i32; LANES]>,
+    gather_masses: Vec<Block>,
 }
 
 impl<'program> BatchExecutor<'program> {
@@ -62,6 +66,8 @@ impl<'program> BatchExecutor<'program> {
                 weights: layer.weights.clone(),
                 gate_rows: layer.gate_rows.clone(),
                 boolean_rows: layer.boolean_rows.clone(),
+                gather_computes: layer.gather_computes.clone(),
+                gather_reads: layer.gather_reads.clone(),
                 index_reads: layer
                     .index_reads
                     .iter()
@@ -87,6 +93,8 @@ impl<'program> BatchExecutor<'program> {
             root_positions,
             values: vec![[0.0; LANES]; program.value_count],
             projection: vec![[0.0; LANES]; max_projection],
+            gather_indices: vec![[0; LANES]; program.gather_slot_count],
+            gather_masses: vec![[0.0; LANES]; program.gather_slot_count],
         }
     }
 
@@ -141,6 +149,8 @@ impl<'program> BatchExecutor<'program> {
         self.evaluate_portable();
     }
 
+    // Lane loops index several blocks at once.
+    #[allow(clippy::needless_range_loop)]
     #[inline(always)]
     fn evaluate_portable(&mut self) {
         let values = &mut self.values;
@@ -155,6 +165,24 @@ impl<'program> BatchExecutor<'program> {
                     for lane in 0..LANES {
                         block[lane] += weight * input[lane];
                     }
+                }
+            }
+            for compute in &layer.gather_computes {
+                let slot = compute.slot as usize;
+                for lane in 0..LANES {
+                    let bits = compute.bit_positions.iter().map(|&bit| values[bit as usize][lane]);
+                    (self.gather_indices[slot][lane], self.gather_masses[slot][lane]) = resolve_gather(bits);
+                }
+            }
+            for read in &layer.gather_reads {
+                let slot = read.slot as usize;
+                let limit = read.candidate_positions.len() as i32 - 1;
+                for lane in 0..LANES {
+                    // As in `TensorExecutor`: the clamp keeps a violated declaration inside the table.
+                    let position = read.candidate_positions[self.gather_indices[slot][lane].clamp(0, limit) as usize];
+                    let candidate = values[position as usize][lane];
+                    let contribution = if read.masked { self.gather_masses[slot][lane] * candidate } else { candidate };
+                    projection[read.row as usize][lane] += contribution;
                 }
             }
             for read in &layer.index_reads {

@@ -34,6 +34,7 @@ mod cells;
 mod circuit;
 pub mod dsl;
 mod emit;
+mod gather;
 mod numeric;
 mod tensor;
 mod wire;
@@ -41,8 +42,8 @@ mod wire;
 pub use batch::{BatchExecutor, LANES};
 pub use cells::{CellSpec, Policy, SourceTable, constant, event, input, input_bit, state, state_bit};
 pub use circuit::{
-    BackpropOptions, BooleanGradient, CandidateTable, Circuit, IndexGradient, IndexRead, Macro, OpKind, Operation,
-    OutOfRange, RoundingPointKind,
+    BackpropOptions, BooleanGradient, CandidateTable, Circuit, IndexGradient, IndexRead, Macro, OneHotGroup, OpKind,
+    Operation, OutOfRange, RoundingPointKind,
 };
 pub use emit::{
     CompareOptions, Relation, emit_and, emit_clamp_exact, emit_compare, emit_compare_with, emit_maximum,
@@ -50,7 +51,7 @@ pub use emit::{
 };
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;
-pub use tensor::{IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
+pub use tensor::{CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
 pub use wire::{Lin, Term, Wire};
 
 #[derive(Clone, Debug, PartialEq)]

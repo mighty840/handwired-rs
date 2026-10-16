@@ -1,6 +1,8 @@
 //! The GPU reproduces the CPU reference evaluator bit for bit.
 
-use handwired_rs::{Circuit, CompareOptions, Lin, OutOfRange, Relation, Wire, emit_compare_with, handwired};
+use handwired_rs::{
+    Circuit, CompareOptions, CompileOptions, Lin, OutOfRange, Relation, Wire, emit_compare_with, handwired,
+};
 use handwired_rs_gpu::{Gpu, GpuBatch, GpuProgram};
 
 struct Rng(u64);
@@ -290,4 +292,83 @@ fn subnormal_comparisons_follow_the_flushing_model() {
     }
     // A flushing GPU calls some unequal pairs equal, such as 0 and 2^-149.
     assert_eq!(flushed_pairs > 0, flushes);
+}
+
+/// Masked sums over one-hot groups, lowered to gathers, on the GPU: groups that allow all zeros, biases, signed and
+/// chained reads, with build-time and recomputed depths.
+#[test]
+fn gathers_match_the_reference() {
+    let Some(gpu) = gpu() else { return };
+    let mut rng = Rng(23);
+    let mut total_reads = 0;
+    for circuit_number in 0..20 {
+        let sizes = [1 + rng.below(6), 1 + rng.below(9)];
+        let pool = 8;
+        let mut circuit = Circuit::new(sizes[0] + sizes[1] + pool);
+        let mut groups = Vec::new();
+        let mut start = 0;
+        for size in sizes {
+            let members: Vec<Wire> = (start..start + size).map(|cell| circuit.source(cell)).collect();
+            let allow_all_zero = rng.below(2) == 0;
+            circuit.assume_one_hot(&members, allow_all_zero);
+            groups.push((members, allow_all_zero));
+            start += size;
+        }
+        for cell in start..start + pool {
+            circuit.assume_range(circuit.source(cell), if cell % 2 == 0 { 0.0 } else { -1e4 }, 1e4);
+        }
+        let mut values: Vec<Wire> = (start..start + pool).map(|cell| circuit.source(cell)).collect();
+        let mut roots = Vec::new();
+        for _ in 0..4 {
+            let (members, _) = &groups[rng.below(2)];
+            let terms: Vec<(Wire, f64)> = members
+                .iter()
+                .map(|&member| {
+                    let value = values[rng.below(values.len())];
+                    (circuit.multiply(member, value), 1.0)
+                })
+                .collect();
+            let read = circuit.affine(Lin::new(terms, rng.pick(&[0.0, 0.75, -3.0])));
+            values.push(read);
+            roots.push(read);
+            roots.push(circuit.round_affine(read * 0.1 + 1.0));
+        }
+        let options = CompileOptions { recompute_depths: circuit_number % 2 == 0, ..Default::default() };
+        let program = circuit.compile_with(Some(&roots), options);
+        // Identical reads deduplicate, and a one-member group's bare read is its product.
+        total_reads += program.gather_read_count();
+        let records: Vec<Vec<f32>> = (0..256)
+            .map(|_| {
+                let mut record = vec![0.0f32; circuit.source_size()];
+                let mut start = 0;
+                for (members, allow_all_zero) in &groups {
+                    let choice = rng.below(members.len() + usize::from(*allow_all_zero));
+                    if choice < members.len() {
+                        record[start + choice] = 1.0;
+                    }
+                    start += members.len();
+                }
+                for (offset, value) in record[start..].iter_mut().enumerate() {
+                    let low = if (start + offset) % 2 == 0 { 0.0 } else { -1e4 };
+                    *value = rng.uniform(low, 1e4) as f32;
+                }
+                record
+            })
+            .collect();
+        let gpu_program = GpuProgram::from_program(&gpu, &program).unwrap();
+        let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
+        for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
+            let values = circuit.evaluate_reference(record).unwrap();
+            for (root, &got) in roots.iter().zip(got) {
+                let want = values[root.index()];
+                assert!(
+                    got == want,
+                    "wire {} for {record:?}: GPU {got:e}, CPU {want:e}\n{}",
+                    root.index(),
+                    gpu_program.wgsl
+                );
+            }
+        }
+    }
+    assert!(total_reads >= 50, "only {total_reads} gather reads");
 }

@@ -3,14 +3,16 @@
 //! Independent operations at the same dependency depth share a layer. A layer
 //! gathers its earlier inputs, evaluates one sparse affine projection (one row
 //! per output, then one gate row per ReGLU, then one index row per index read),
-//! applies index reads, ReGLU gates and boolean rounding, and appends its
-//! outputs. Operations that no requested root reads are removed.
-//!
-//! Not yet ported from handwired: lowering one-hot masked sums to gathers, and
-//! recomputing depths after lowering.
+//! applies gather reads, index reads, ReGLU gates and boolean rounding, and
+//! appends its outputs. Operations that no requested root reads are removed.
+//! A masked sum over a declared one-hot group compiles to a gather read (see
+//! [`OneHotGroup`](crate::OneHotGroup)).
+
+use std::collections::HashMap;
 
 use crate::Error;
 use crate::circuit::{Circuit, OpKind, OutOfRange, resolve_index_position};
+use crate::gather::{GatherPlan, plan_gather_lowering};
 use crate::numeric::{evaluate_boolean, relu32};
 use crate::wire::Wire;
 
@@ -22,6 +24,41 @@ pub struct IndexReadRow {
     pub above_zero: bool,
     /// Packed positions of the candidates.
     pub candidate_positions: Vec<u32>,
+}
+
+/// Resolves a one-hot group's selected position once per evaluation, at the
+/// first layer that reads the group: `Σ position × bit` and `Σ bit`, exact for
+/// 0/1 bits.
+#[derive(Clone, Debug)]
+pub struct GatherCompute {
+    pub slot: u32,
+    /// Packed positions of the group's members, in group order.
+    pub bit_positions: Vec<u32>,
+}
+
+/// A lowered masked sum: the row's bias plus the selected candidate, which is
+/// first multiplied by the group's sum of bits when the group allows all zeros.
+#[derive(Clone, Debug)]
+pub struct GatherRead {
+    pub row: u32,
+    pub slot: u32,
+    pub masked: bool,
+    pub candidate_positions: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Copy)]
+pub struct CompileOptions {
+    /// Lower masked sums over declared one-hot groups to gather reads. On by default.
+    pub lower_gathers: bool,
+    /// Place each operation one layer after the deepest value it reads in the compiled program, instead of at its
+    /// build-time depth, so a gather read stops waiting for the products it replaced. Off by default.
+    pub recompute_depths: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> CompileOptions {
+        CompileOptions { lower_gathers: true, recompute_depths: false }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +75,8 @@ pub struct TensorLayer {
     /// Output rows whose value is multiplied by relu of gate row `output_size + k`.
     pub gate_rows: Vec<u32>,
     pub boolean_rows: Vec<u32>,
+    pub gather_computes: Vec<GatherCompute>,
+    pub gather_reads: Vec<GatherRead>,
     pub index_reads: Vec<IndexReadRow>,
 }
 
@@ -52,6 +91,8 @@ pub struct TensorProgram {
     pub wire_order: Vec<Wire>,
     /// The circuit's width, for full-width results.
     pub width: usize,
+    /// One slot per one-hot group that gather reads use.
+    pub gather_slot_count: usize,
 }
 
 impl TensorProgram {
@@ -62,25 +103,36 @@ impl TensorProgram {
     pub fn live_operation_count(&self) -> usize {
         self.value_count - self.source_size
     }
+
+    pub fn gather_read_count(&self) -> usize {
+        self.layers.iter().map(|layer| layer.gather_reads.len()).sum()
+    }
 }
 
 impl Circuit {
     /// Compile the operations that `roots` need, or every operation when
-    /// `roots` is `None`.
+    /// `roots` is `None`, with the default [`CompileOptions`].
     pub fn compile(&self, roots: Option<&[Wire]>) -> TensorProgram {
+        self.compile_with(roots, CompileOptions::default())
+    }
+
+    pub fn compile_with(&self, roots: Option<&[Wire]>, options: CompileOptions) -> TensorProgram {
         let width = self.width();
         let source_size = self.source_size();
         let roots: Vec<Wire> = match roots {
             Some(roots) => roots.to_vec(),
             None => (source_size..width).map(Wire::from_index).collect(),
         };
-        let live = self.find_live_operations(&roots);
+        let plans = if options.lower_gathers { plan_gather_lowering(self) } else { HashMap::new() };
+        let live = self.find_live_operations(&roots, &plans);
+        let compiled_depths = options.recompute_depths.then(|| self.compute_compiled_depths(&live, &plans));
         let mut operations_by_layer: Vec<Vec<usize>> = Vec::new();
         for (operation_index, operation) in self.operations.iter().enumerate() {
             if !live[operation_index] {
                 continue;
             }
-            let layer = operation.depth as usize - 1;
+            let depth = compiled_depths.as_ref().map_or(operation.depth, |depths| depths[operation_index]);
+            let layer = depth as usize - 1;
             if operations_by_layer.len() <= layer {
                 operations_by_layer.resize(layer + 1, Vec::new());
             }
@@ -98,10 +150,15 @@ impl Circuit {
         let mut column_by_wire = vec![u32::MAX; width];
         let mut available = source_size;
         let mut layers = Vec::new();
+        let mut slot_by_group: HashMap<usize, u32> = HashMap::new();
         for operation_indices in operations_by_layer.iter().filter(|indices| !indices.is_empty()) {
             let output_size = operation_indices.len();
             let mut input_wires: Vec<Wire> = Vec::new();
             for &operation_index in operation_indices {
+                // Gather rows read packed values by position, not through the layer's input.
+                if plans.contains_key(&operation_index) {
+                    continue;
+                }
                 let operation = &self.operations[operation_index];
                 for &(wire, _) in operation.left_terms.iter().chain(&operation.gate_terms) {
                     if column_by_wire[wire.index()] == u32::MAX {
@@ -123,6 +180,7 @@ impl Circuit {
             let mut projection_terms: Vec<&[(Wire, f64)]> = vec![&[]; projection_size];
             let mut gate_rows = Vec::new();
             let mut boolean_rows = Vec::new();
+            let mut pending_gather_reads = Vec::new();
             let mut pending_index_reads = Vec::new();
             let (mut gate_row, mut index_row) = (0, 0);
             for (row, &operation_index) in operation_indices.iter().enumerate() {
@@ -131,6 +189,11 @@ impl Circuit {
                 wire_order.push(Wire::from_index(output_wire));
                 packed_by_wire[output_wire] = (available + row) as u32;
                 bias[row] = operation.left_bias as f32;
+                if let Some(plan) = plans.get(&operation_index) {
+                    // The row keeps its bias and stores no weights; the executor adds the gathered value.
+                    pending_gather_reads.push((row, plan));
+                    continue;
+                }
                 projection_terms[row] = &operation.left_terms;
                 match operation.kind {
                     OpKind::Reglu => {
@@ -150,6 +213,31 @@ impl Circuit {
                     }
                     OpKind::Affine => {}
                 }
+            }
+            let mut gather_computes = Vec::new();
+            let mut gather_reads = Vec::new();
+            for (row, plan) in pending_gather_reads {
+                let group = &self.one_hot_groups[plan.group];
+                let packed = |wire: Wire| {
+                    let position = packed_by_wire[wire.index()];
+                    assert!((position as usize) < available, "a gather's bit or candidate is not available");
+                    position
+                };
+                let next_slot = slot_by_group.len() as u32;
+                let slot = *slot_by_group.entry(plan.group).or_insert_with(|| {
+                    // The group's first read resolves its index; its bits are at earlier depths.
+                    gather_computes.push(GatherCompute {
+                        slot: next_slot,
+                        bit_positions: group.members.iter().map(|&m| packed(m)).collect(),
+                    });
+                    next_slot
+                });
+                gather_reads.push(GatherRead {
+                    row: row as u32,
+                    slot,
+                    masked: group.allow_all_zero,
+                    candidate_positions: plan.candidates.iter().map(|&candidate| packed(candidate)).collect(),
+                });
             }
             let index_reads = pending_index_reads
                 .into_iter()
@@ -194,14 +282,75 @@ impl Circuit {
                 weights,
                 gate_rows,
                 boolean_rows,
+                gather_computes,
+                gather_reads,
                 index_reads,
             });
             available += output_size;
         }
-        TensorProgram { layers, roots, source_size, value_count, wire_order, width }
+        TensorProgram {
+            layers,
+            roots,
+            source_size,
+            value_count,
+            wire_order,
+            width,
+            gather_slot_count: slot_by_group.len(),
+        }
     }
 
-    fn find_live_operations(&self, roots: &[Wire]) -> Vec<bool> {
+    /// Each live operation's depth from what it reads in the compiled program: a lowered sum reads its group's bits
+    /// and its candidates instead of its products. Without gather plans these are the build-time depths.
+    fn compute_compiled_depths(&self, live: &[bool], plans: &HashMap<usize, GatherPlan>) -> Vec<u32> {
+        let source_size = self.source_size();
+        let mut depths = vec![0u32; self.operations.len()];
+        let mut table_depths: HashMap<usize, u32> = HashMap::new();
+        for (operation_index, operation) in self.operations.iter().enumerate() {
+            if !live[operation_index] {
+                continue;
+            }
+            let depth_of = |wire: Wire| wire.index().checked_sub(source_size).map_or(0, |index| depths[index]);
+            let depth = match plans.get(&operation_index) {
+                Some(plan) => self.one_hot_groups[plan.group]
+                    .members
+                    .iter()
+                    .chain(&plan.candidates)
+                    .map(|&wire| depth_of(wire))
+                    .max()
+                    .unwrap_or(0),
+                None => {
+                    let mut depth = operation
+                        .left_terms
+                        .iter()
+                        .chain(&operation.gate_terms)
+                        .map(|&(wire, _)| depth_of(wire))
+                        .max()
+                        .unwrap_or(0);
+                    if let Some(read) = &operation.index_read {
+                        let table_depth = match table_depths.get(&read.table) {
+                            Some(&table_depth) => table_depth,
+                            None => {
+                                let table_depth = self.tables[read.table]
+                                    .candidates
+                                    .iter()
+                                    .map(|&candidate| depth_of(candidate))
+                                    .max()
+                                    .unwrap_or(0);
+                                table_depths.insert(read.table, table_depth);
+                                table_depth
+                            }
+                        };
+                        depth = depth.max(table_depth);
+                    }
+                    depth
+                }
+            };
+            depths[operation_index] = depth + 1;
+        }
+        depths
+    }
+
+    fn find_live_operations(&self, roots: &[Wire], plans: &HashMap<usize, GatherPlan>) -> Vec<bool> {
         let source_size = self.source_size();
         let mut live = vec![false; self.operations.len()];
         let mut visited_tables = vec![false; self.tables.len()];
@@ -213,6 +362,12 @@ impl Circuit {
                 continue;
             }
             live[operation_index] = true;
+            if let Some(plan) = plans.get(&operation_index) {
+                // A lowered sum reads the group's bits and every candidate, not its products.
+                pending.extend(&self.one_hot_groups[plan.group].members);
+                pending.extend(&plan.candidates);
+                continue;
+            }
             let operation = &self.operations[operation_index];
             pending.extend(operation.left_terms.iter().chain(&operation.gate_terms).map(|&(wire, _)| wire));
             if let Some(read) = &operation.index_read
@@ -263,6 +418,8 @@ pub struct TensorExecutor<'program> {
     pub packed_values: Vec<f32>,
     input: Vec<f32>,
     projection: Vec<f32>,
+    gather_indices: Vec<i32>,
+    gather_masses: Vec<f32>,
     root_positions: Vec<usize>,
     outputs: Vec<f32>,
 }
@@ -281,6 +438,8 @@ impl<'program> TensorExecutor<'program> {
             packed_values: vec![0.0; program.value_count],
             input: vec![0.0; max_input],
             projection: vec![0.0; max_projection],
+            gather_indices: vec![0; program.gather_slot_count],
+            gather_masses: vec![0.0; program.gather_slot_count],
             root_positions,
             outputs: vec![0.0; program.roots.len()],
         }
@@ -305,6 +464,16 @@ impl<'program> TensorExecutor<'program> {
                     value += layer.weights[entry] * self.input[layer.columns[entry] as usize];
                 }
                 *output = value;
+            }
+            for compute in &layer.gather_computes {
+                let (index, mass) = resolve_gather(compute.bit_positions.iter().map(|&bit| values[bit as usize]));
+                self.gather_indices[compute.slot as usize] = index;
+                self.gather_masses[compute.slot as usize] = mass;
+            }
+            for read in &layer.gather_reads {
+                let slot = read.slot as usize;
+                let contribution = gathered(values, read, self.gather_indices[slot], self.gather_masses[slot]);
+                projection[read.row as usize] += contribution;
             }
             for read in &layer.index_reads {
                 let index = projection[read.index_row as usize] as f64;
@@ -332,4 +501,22 @@ impl<'program> TensorExecutor<'program> {
         }
         &self.outputs
     }
+}
+
+/// A group's selected position and its sum of bits. For exact 0/1 bits both are exact small integers.
+pub(crate) fn resolve_gather(bits: impl Iterator<Item = f32>) -> (i32, f32) {
+    let (mut index, mut mass) = (0f64, 0f64);
+    for (position, bit) in bits.enumerate() {
+        index += position as f64 * bit as f64;
+        mass += bit as f64;
+    }
+    (index as i32, mass as f32)
+}
+
+/// The selected candidate, times the group's mass for a group that allows all zeros. The clamp keeps a violated
+/// one-hot declaration inside the table.
+pub(crate) fn gathered(values: &[f32], read: &GatherRead, index: i32, mass: f32) -> f32 {
+    let index = index.clamp(0, read.candidate_positions.len() as i32 - 1) as usize;
+    let candidate = values[read.candidate_positions[index] as usize];
+    if read.masked { mass * candidate } else { candidate }
 }

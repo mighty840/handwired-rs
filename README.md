@@ -156,13 +156,23 @@ Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests sk
 | Reference evaluator and reverse-mode backprop (boolean / index gradient rules) | ✅ |
 | Layered sparse compiler with dead-operation removal, CPU executor | ✅ plus a vectorized, multithreaded batch executor |
 | Source table cells (`input`, `event`, `state`, `state_bit`, grids, validation) | ✅ simplified |
-| One-hot groups and gather lowering, `recompute_depths` | ⏳ not yet |
+| One-hot groups and gather lowering, `recompute_depths` | ✅ on the CPU executors and the GPU |
 | Springs / host timing, `emit_argmax`, `emit_first_active`, `inline_circuit`, prefix networks | ⏳ not yet |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
 | GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
 
 One deliberate difference: cells declared as exact bits also get grid 1, so comparisons over sums of bits take the
 cheap integer-bit form.
+
+**One-hot groups and gathers.** `circuit.assume_one_hot(&bits, allow_all_zero)` declares that exactly one of `bits`
+is 1 (or at most one). A sum of `multiply(bit, value)` over the whole group, e.g. the selected item's height, then
+compiles to a gather: the executor finds the selected position once per group and reads that one value, instead of a
+product per member. It's exact, up to the sign of an exactly zero result, for candidates with finite bounds; sums that
+don't match the pattern exactly (a scaled term, a missing member, an extra term, two groups) stay dense.
+`CompileOptions { recompute_depths: true, .. }` also moves what follows a gather up to the layer after its inputs.
+`circuit.validate_one_hot_groups(&values)` checks the declaration in tests, since a false one makes the gather read
+the wrong value. `#[handwired]` doesn't declare groups yet. For a read at a computed integer index, an index read (one
+operation) is cheaper than a one-hot group; `#[handwired]` array reads already use one.
 
 ## Limitations
 
@@ -184,10 +194,11 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
   returns in many arms grow the generated code.
 - Error messages for unsupported code come from rustc's type checker and can be indirect.
 
-**Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element (gather
-lowering isn't ported), early `return`s chain into deep layer stacks (the search example has 127 layers), and
+**Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element, since
+every element may change; early `return`s chain into deep layer stacks (the search example has 127 layers), and
 integer division by a constant is a table read over the dividend's range (at most 65,536 entries). The search example
-is still about 10x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is exactness, differentiability and a tensor-shaped program, not speed.
+is still about 10x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is
+exactness, differentiability and a tensor-shaped program, not speed.
 
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
@@ -197,8 +208,8 @@ lets drivers assume there are no NaNs or infinities. There's no backward pass on
 **Differentiability.** The reference evaluator has a backward pass, tested on small cases; nothing here trains a
 circuit yet, and there's no export to a deep learning framework.
 
-**Not ported from handwired.** One-hot groups and gather lowering, depth recomputation, springs and frame timing,
-`argmax`/`first_active`, circuit inlining, prefix networks, and its demos (HandwiredOS, the learned gallery, JSON
+**Not ported from handwired.** Springs and frame timing, `argmax`/`first_active`, circuit inlining, prefix networks,
+index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON
 search).
 
 ## License
@@ -215,6 +226,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/tensor.rs`: seeded random circuits, where the compiled program has to reproduce every live value of the
   reference evaluator, and the batch executor has to reproduce the one-record executor bit for bit, in full and
   partial batches, on one thread and several.
+- `tests/gather.rs`: gather lowering, ported from handwired's gather-lowering tests: which masked sums lower (both
+  product orientations, mixed-sign products, biases, chained gathers, groups that allow all zeros) and which stay dense
+  (scaled, missing or extra terms, two groups, values that may be infinite), one index resolution per group, extreme
+  values, recomputed depths, a violated declaration, and seeded random circuits, through both CPU executors.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested
@@ -223,9 +238,9 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/toggle.rs`: handwired's toggle-switch template (without its spring), compared frame by frame with the same
   switch in plain Rust, over a scripted trace and random traces near the track edges.
 
-- `gpu/tests/exact.rs`: random circuits, comparisons at their edges and `#[handwired]` batches on the GPU, compared bit
-  for bit with the CPU reference (skipped without an adapter), and comparisons of subnormal values, checked against
-  the flushing model when the GPU flushes them.
+- `gpu/tests/exact.rs`: random circuits, comparisons at their edges, gathers over one-hot groups and `#[handwired]`
+  batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), and comparisons of
+  subnormal values, checked against the flushing model when the GPU flushes them.
 
 `cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
 toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262
