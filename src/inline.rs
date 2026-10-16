@@ -34,8 +34,8 @@ impl Circuit {
                 circuit.assume_grid(wire, step);
             }
         };
-        for cell in 0..source.source_size() {
-            let (from, to) = (Wire::from_index(cell), source_wires[cell]);
+        for (cell, &to) in source_wires.iter().enumerate() {
+            let from = Wire::from_index(cell);
             let range = source.range(from);
             declare_range(self, to, range.min, range.max);
             if let Some(grid) = source.grid(from) {
