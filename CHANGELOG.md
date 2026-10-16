@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.4.0 (handwired-rs-macros stays 0.2.0)
 
 - `verify`, `verify_seeded` and `verify_with` check their samples on every core: one `verify(20,000)` of a
   1,053-operation circuit in a debug build goes from 2.6 s to 0.54 s. Inputs are still drawn in order from the seed,
