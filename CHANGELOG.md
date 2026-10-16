@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.5.0, handwired-rs-macros 0.3.0
 
 - Integer bitwise operators in `#[handwired]` functions: `&`, `|`, `^`, `!`, `<<`, `>>`, their `op=` forms and
-  `count_ones()`, on values within ±2^24. A value is split into two's-complement bits, one layer per bit; AND is one
-  ReLU per bit, and OR and XOR are sums over it. Shifts by a constant move bits (`<<` wraps like Rust only where the
+  `count_ones()`, on values within ±2^24. A value is split into two's-complement bits, one layer per bit up to 11 bits
+  and two above; AND is one ReLU per bit, and OR and XOR are sums over it. Shifts by a constant move bits (`<<` wraps like Rust only where the
   result may leave the type), shifts by an input value read the result for each amount. A u8 XOR is 40 operations in
   10 layers. `dsl::shl`, `dsl::shr` and `dsl::Shift` are what the macro calls.
 - `#[derive(HwType)]` on enums whose variants carry no data (handwired-rs-macros): the enum is a scalar, its
@@ -13,7 +13,8 @@
   indices and enum results work in `#[handwired]` functions.
 - `matches!(x, pattern if guard)` and `if let pattern = x { .. } else { .. }` in `#[handwired]` functions, lowered
   like `match`, so they work on enums, integers, tuples and bindings.
-- `Scalar` no longer requires `PartialOrd`, and gains `default_value()` (an enum's first variant). `dsl::declare_scalar`,
+- `Scalar` no longer requires `PartialOrd` (breaking for generic code that compares `T: Scalar` values with `<`), and
+  gains `default_value()` (an enum's first variant). `dsl::declare_scalar`,
   `dsl::sample_variant` and `dsl::compare_native` are public for the derive.
 
 ## 0.4.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.4.0 (handwired-rs-macros stays 0.2.0)

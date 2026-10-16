@@ -88,8 +88,7 @@ fn variable_shifts(
 #[test]
 fn shifts_by_circuit_amounts() {
     let compiled = variable_shifts_circuit();
-    let report = compiled.verify(20_000).unwrap();
-    assert!(report.checked > 10_000, "{report:?}");
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
     assert_eq!(compiled.eval(&(0b1011_0001, 3, -1234, 4)).unwrap(), (0b1000_1000, 0b0001_0110, -19744, -78));
 }
 
@@ -189,4 +188,31 @@ fn too_wide(#[range(0, 1_000_000)] a: u32) -> u32 {
 #[should_panic(expected = "beyond ±2^24")]
 fn shifting_past_two_to_the_24_is_rejected_at_build() {
     too_wide_circuit();
+}
+
+/// Large shifts of copied bits: each bit lands at up to 2^15 in the result's sum.
+#[handwired]
+fn far_shifts(#[range(0, 2047)] x: u16, #[range(-2048, 2047)] a: i16) -> (u16, u16, u16, i16, i16) {
+    (x << 15, x << 12, x << 9, a << 15, a << 11)
+}
+
+#[test]
+fn far_shifts_match_rust_on_every_value() {
+    let records: Vec<(u16, i16)> = (0..=2047u16).flat_map(|x| [(x, x as i16 - 2048), (x, x as i16)]).collect();
+    let results = far_shifts_circuit().run_batch(&records).unwrap();
+    for (&(x, a), result) in records.iter().zip(&results) {
+        assert_eq!(*result, far_shifts(x, a), "{x} {a}");
+    }
+}
+
+/// `!` on a u32 is always at least 2^32 - 2^24.
+#[handwired]
+fn wide_not(#[range(0, 1000)] a: u32) -> u32 {
+    !a
+}
+
+#[test]
+#[should_panic(expected = "mask instead")]
+fn not_on_wide_unsigned_types_is_rejected_at_build() {
+    wide_not_circuit();
 }

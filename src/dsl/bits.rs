@@ -61,8 +61,11 @@ fn native_bits(value: i64) -> Bits {
 }
 
 /// Values of up to this many bits are split with bits that readers copy into
-/// their own sums: the ramps behind them then reach 2^(2 len + 1) at most,
-/// within 2^23, so f32 adds them exactly in any order.
+/// their own sums. Only the split's next steps (at weights up to 2^k) and the
+/// ANDs (at weight 1) copy them, so the ramps behind them reach 2^(2 len + 1)
+/// at most, within 2^23, and f32 adds them exactly in any order. Results are
+/// kept as their own sums, so a later `<< 15` or `* 4096` reads them as values
+/// instead of copying ramps.
 const COPIED_BITS: usize = 11;
 
 /// `[form >= threshold]` for an integer form: `relu(form - threshold + 1) -
@@ -279,6 +282,13 @@ impl<T: IntScalar> Not for Val<T> {
     fn not(self) -> Val<T> {
         let at = Location::caller();
         let flip = if T::MIN < 0.0 { -1.0 } else { T::MAX };
+        assert!(
+            flip < 16_777_216.0,
+            "{at}: `!` on a {} is at least {} - 2^24, beyond ±2^24; mask instead, e.g. `x ^ 0xFFFF`, or use a narrower \
+             type",
+            T::NAME,
+            T::MAX
+        );
         with_circuit(|circuit| {
             let wire = circuit.affine(flip - self.wire);
             number(circuit, wire, at)
