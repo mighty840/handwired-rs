@@ -203,7 +203,14 @@ macro_rules! scalar_types {
                 <$t as Scalar>::from_f64(values.next().expect("too few output values") as f64)
             }
             fn outputs(value: &Val<$t>, out: &mut Vec<Wire>) {
-                out.push(value.wire);
+                if value.is_wide() {
+                    panic!(
+                        "a {} result may leave ±2^24, which one f32 cell can't hold; return it narrowed, e.g. as bytes \
+                         with `(x >> 8) as u8`, or masked within 24 bits",
+                        stringify!($t)
+                    );
+                }
+                out.push(value.wire());
             }
             fn sample(rng: &mut Rng, attrs: &Attrs) -> $t {
                 sample_scalar::<$t>(rng, attrs)

@@ -16,28 +16,23 @@
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 use std::panic::Location;
 
-use super::ops::{and_bits, number};
-use super::{IntScalar, Mux, Scalar, Val, known_bit, settle, with_circuit};
+use super::ops::{and_bits, number, wide_pair};
+use super::wide::{self, Motion};
+use super::{IntScalar, Mux, Scalar, Val, is_wide, known_bit, settle, width, with_circuit};
 use crate::circuit::Circuit;
 use crate::wire::{Lin, Wire};
 
 /// The bits of an integer in two's complement.
-struct Bits {
+pub(super) struct Bits {
     low: Vec<Val<bool>>,
     sign: Val<bool>,
 }
 
 impl Bits {
     /// Bit `k`, the sign above the low bits.
-    fn bit(&self, k: usize) -> Val<bool> {
+    pub(super) fn bit(&self, k: usize) -> Val<bool> {
         self.low.get(k).copied().unwrap_or(self.sign)
     }
-}
-
-/// The type's width in bits, e.g. 8 for u8 and i8.
-fn width<T: Scalar>() -> usize {
-    let magnitude = (T::MAX + 1.0).log2() as usize;
-    if T::MIN < 0.0 { magnitude + 1 } else { magnitude }
 }
 
 fn constant_bit(value: bool) -> Val<bool> {
@@ -73,7 +68,7 @@ const COPIED_BITS: usize = 11;
 /// ordinary sum that readers fold into theirs, so each bit is one layer;
 /// otherwise it is kept as its own sum, which readers read as a 0 or 1, since
 /// copying ramps of up to 2^24 times 2^k would round.
-fn integer_step(circuit: &mut Circuit, form: &Lin, threshold: f64, copied: bool) -> Val<bool> {
+pub(super) fn integer_step(circuit: &mut Circuit, form: &Lin, threshold: f64, copied: bool) -> Val<bool> {
     let shifted = |offset: f64| Lin::new(form.terms.clone(), form.bias + offset);
     let upper = circuit.relu(shifted(1.0 - threshold));
     let lower = circuit.relu(shifted(-threshold));
@@ -84,12 +79,12 @@ fn integer_step(circuit: &mut Circuit, form: &Lin, threshold: f64, copied: bool)
 
 /// The bits of a circuit integer, from its range. The rest left to split
 /// stays a sum, so each bit's step reads it directly: one layer per bit.
-fn split<T: Scalar>(value: Val<T>) -> Bits {
-    if let Some(known) = with_circuit(|circuit| circuit.constant_value(value.wire)) {
+pub(super) fn split<T: Scalar>(value: Val<T>) -> Bits {
+    if let Some(known) = with_circuit(|circuit| circuit.constant_value(value.wire())) {
         return native_bits(known as i64);
     }
     with_circuit(|circuit| {
-        let range = circuit.range(value.wire);
+        let range = circuit.range(value.wire());
         let (low, high) = (range.min.ceil(), range.max.floor());
         assert!(
             low > -16_777_216.0 && high < 16_777_216.0,
@@ -101,12 +96,12 @@ fn split<T: Scalar>(value: Val<T>) -> Bits {
             len += 1;
         }
         let copied = len <= COPIED_BITS;
-        let mut rest = Lin::new(vec![(value.wire, 1.0)], 0.0);
+        let mut rest = Lin::new(vec![(value.wire(), 1.0)], 0.0);
         // A negative value is brought into 0..2^len: rest = value + 2^len where value < 0.
         let sign = if low < 0.0 {
-            let negated = Lin::new(vec![(value.wire, -1.0)], 0.0);
+            let negated = Lin::new(vec![(value.wire(), -1.0)], 0.0);
             let sign = integer_step(circuit, &negated, 1.0, copied);
-            rest.terms.push((sign.wire, (1u64 << len) as f64));
+            rest.terms.push((sign.wire(), (1u64 << len) as f64));
             sign
         } else {
             Val::<bool>::from_wire(integer_constant(circuit, 0.0))
@@ -122,7 +117,7 @@ fn split<T: Scalar>(value: Val<T>) -> Bits {
                 integer_step(circuit, &rest, (1u64 << k) as f64, copied)
             };
             low_bits[k] = bit;
-            rest.terms.push((bit.wire, -((1u64 << k) as f64)));
+            rest.terms.push((bit.wire(), -((1u64 << k) as f64)));
         }
         Bits { low: low_bits, sign }
     })
@@ -141,10 +136,10 @@ fn join<T: Scalar>(
 ) -> Val<T> {
     let mut form = extra;
     for (k, bit) in low.iter().enumerate() {
-        form.terms.push((bit.wire, scale * (1u64 << k) as f64));
+        form.terms.push((bit.wire(), scale * (1u64 << k) as f64));
     }
     let top = (1u64 << low.len()) as f64;
-    form.terms.push((sign.wire, -scale * top));
+    form.terms.push((sign.wire(), -scale * top));
     with_circuit(|circuit| {
         // Kept as its own sum, so that readers, e.g. `(a ^ b) * 4096`, read the result instead of copying the bits'
         // ramps into sums where f32 would round them.
@@ -153,7 +148,7 @@ fn join<T: Scalar>(
         circuit.assume_range_allowing_readers(wire, if negative { -top } else { 0.0 }, top - 1.0);
         circuit.assume_grid_allowing_readers(wire, 1.0);
         let joined: Val<T> = number(circuit, wire, at);
-        settle(circuit, joined.wire, T::MIN, T::MAX)
+        settle(circuit, joined.wire(), T::MIN, T::MAX)
     })
 }
 
@@ -166,6 +161,9 @@ fn may_be_set(bit: Val<bool>) -> bool {
 #[track_caller]
 fn bitwise<T: Scalar>(left: Val<T>, right: Val<T>, weight: f64) -> Val<T> {
     let at = Location::caller();
+    if let Some((a, b)) = wide_pair(left, right) {
+        return wide::bitwise(&a, &b, weight);
+    }
     let (left_bits, right_bits) = (split(left), split(right));
     let len = left_bits.low.len().max(right_bits.low.len());
     let low: Vec<Val<bool>> = (0..len).map(|k| and_bits(left_bits.bit(k), right_bits.bit(k))).collect();
@@ -175,16 +173,25 @@ fn bitwise<T: Scalar>(left: Val<T>, right: Val<T>, weight: f64) -> Val<T> {
     }
     // OR and XOR are negative where either side is.
     let negative = may_be_set(left_bits.sign) || may_be_set(right_bits.sign);
-    join(&low, sign, -weight, Lin::new(vec![(left.wire, 1.0), (right.wire, 1.0)], 0.0), negative, at)
+    join(&low, sign, -weight, Lin::new(vec![(left.wire(), 1.0), (right.wire(), 1.0)], 0.0), negative, at)
 }
 
 /// `value << amount` for a native amount, wrapped into the type's width like Rust.
 fn shift_left<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
+    if value.is_wide() {
+        return wide::shift(&wide::limbs_as::<T, T>(value), amount as usize, Motion::Left);
+    }
     let factor = 2f64.powi(amount as i32);
-    let range = with_circuit(|circuit| circuit.range(value.wire));
-    if range.min * factor >= T::MIN && range.max * factor <= T::MAX {
+    let range = with_circuit(|circuit| circuit.range(value.wire()));
+    let (low, high) = (range.min * factor, range.max * factor);
+    let fits_wire = low > -16_777_216.0 && high < 16_777_216.0;
+    if is_wide::<T>() && !(fits_wire && low >= T::MIN && high <= T::MAX) {
+        // The shifted value, or its wrapped pattern, may leave ±2^24: shift the bytes.
+        return wide::shift(&wide::limbs_as::<T, T>(value), amount as usize, Motion::Left);
+    }
+    if low >= T::MIN && high <= T::MAX {
         return with_circuit(|circuit| {
-            let wire = circuit.affine(value.wire * factor);
+            let wire = circuit.affine(value.wire() * factor);
             number(circuit, wire, at)
         });
     }
@@ -204,6 +211,9 @@ fn shift_left<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
 
 /// `value >> amount` for a native amount: the high bits, a floor division by 2^amount.
 fn shift_right<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
+    if value.is_wide() {
+        return wide::shift(&wide::limbs_as::<T, T>(value), amount as usize, Motion::Right);
+    }
     let bits = split(value);
     let low: Vec<Val<bool>> = bits.low.iter().skip(amount as usize).copied().collect();
     join(&low, bits.sign, 1.0, Lin::new(vec![], 0.0), may_be_set(bits.sign), at)
@@ -221,7 +231,7 @@ fn shift_native<T: Scalar>(value: Val<T>, amount: i64, left: bool) -> Val<T> {
 #[track_caller]
 fn shift_by<T: Scalar, I: IntScalar>(value: Val<T>, amount: Val<I>, left: bool) -> Val<T> {
     let at = Location::caller();
-    let range = with_circuit(|circuit| circuit.range(amount.wire));
+    let range = with_circuit(|circuit| circuit.range(amount.wire()));
     // Amounts outside 0..width panic in Rust, so only those within it need results.
     let last = (range.max.floor() as i64).min(width::<T>() as i64 - 1).max(0);
     let results: Vec<Val<T>> = (0..=last)
@@ -282,15 +292,12 @@ impl<T: IntScalar> Not for Val<T> {
     fn not(self) -> Val<T> {
         let at = Location::caller();
         let flip = if T::MIN < 0.0 { -1.0 } else { T::MAX };
-        assert!(
-            flip < 16_777_216.0,
-            "{at}: `!` on a {} is at least {} - 2^24, beyond ±2^24; mask instead, e.g. `x ^ 0xFFFF`, or use a narrower \
-             type",
-            T::NAME,
-            T::MAX
-        );
+        if self.is_wide() || flip >= 16_777_216.0 {
+            // E.g. `!x` on a u32 is at least 2^32 - 2^24: flip the bytes.
+            return wide::not(&wide::limbs_as::<T, T>(self));
+        }
         with_circuit(|circuit| {
-            let wire = circuit.affine(flip - self.wire);
+            let wire = circuit.affine(flip - self.wire());
             number(circuit, wire, at)
         })
     }
@@ -382,14 +389,48 @@ impl<T: IntScalar> Val<T> {
     /// The number of 1 bits in the type's width, like `u8::count_ones`.
     #[track_caller]
     pub fn count_ones(self) -> Val<u32> {
+        if self.is_wide() {
+            return wide::count_ones(&wide::limbs_as::<T, T>(self));
+        }
         let bits = split(self);
         let width = width::<T>();
-        let mut form = Lin::new(bits.low.iter().map(|bit| (bit.wire, 1.0)).collect(), 0.0);
+        let mut form = Lin::new(bits.low.iter().map(|bit| (bit.wire(), 1.0)).collect(), 0.0);
         // The sign repeats in every bit above the low ones.
-        form.terms.push((bits.sign.wire, (width - bits.low.len()) as f64));
+        form.terms.push((bits.sign.wire(), (width - bits.low.len()) as f64));
         with_circuit(|circuit| {
             let wire = circuit.round_affine(form);
             settle(circuit, wire, 0.0, width as f64)
         })
+    }
+
+    /// The bits rotated left by `amount`, like `u32::rotate_left`.
+    #[track_caller]
+    pub fn rotate_left(self, amount: u32) -> Val<T> {
+        self.rotate(amount, true, Location::caller())
+    }
+
+    /// The bits rotated right by `amount`, like `u32::rotate_right`.
+    #[track_caller]
+    pub fn rotate_right(self, amount: u32) -> Val<T> {
+        self.rotate(amount, false, Location::caller())
+    }
+
+    fn rotate(self, amount: u32, left: bool, at: &Location) -> Val<T> {
+        let width = width::<T>();
+        if is_wide::<T>() {
+            let motion = if left { Motion::RotateLeft } else { Motion::RotateRight };
+            return wide::shift(&wide::limbs_as::<T, T>(self), amount as usize % width, motion);
+        }
+        // Up to 16 bits: move the bits, the top one being the sign of a signed type.
+        let bits = split(self);
+        let amount = amount as usize % width;
+        let source = |k: usize| if left { (k + width - amount) % width } else { (k + amount) % width };
+        let moved: Vec<Val<bool>> = (0..width).map(|k| bits.bit(source(k))).collect();
+        if T::MIN < 0.0 {
+            let sign = moved[width - 1];
+            join(&moved[..width - 1], sign, 1.0, Lin::new(vec![], 0.0), may_be_set(sign), at)
+        } else {
+            join(&moved, constant_bit(false), 1.0, Lin::new(vec![], 0.0), false, at)
+        }
     }
 }

@@ -124,7 +124,9 @@ work; labeled loops and `break value` don't. A loop whose condition doesn't depe
 it's false, so its limit costs nothing there. The tests run gcd on every pair of u8s and digit sums on every u16.
 
 **Declarations:** `#[range(lo, hi)]` is required on `f32` parameters and on integer types wider than 2^24 (`u32`,
-`i32`, ...), whose values must stay within ±2^24 (the build panics, pointing at the operation, if they may not).
+`i32`, ...), since a parameter or result is one f32 cell within ±2^24. Plain `+ - *` on them must stay there too (the
+build panics, pointing at the operation, if they may not); shifts, bitwise operators and `wrapping_*` may go beyond,
+see [Wide integers](#wide-integers).
 `#[grid(step)]` declares a power-of-two grid, e.g. `1.0 / 64.0` for pointer coordinates, which makes comparisons
 cheap. On a compound parameter, `#[range]` applies to every scalar, while `#[ranges([(2, 20), (1, 200), (2, 6)])]`, or
 `#[ranges(CONST)]` with a `const CONST: [(f64, f64); N]`, gives each scalar its own, in order.
@@ -234,16 +236,45 @@ fn xorshift16(state: u16) -> u16 {
 ```
 
 The tests run every u8 and i8 pair, every xorshift16 state and every value of 11- and 12-bit operands through the
-circuits. Values must stay within ±2^24, so 32- and 64-bit hashes and bitboards wider than 24 bits (Connect Four's 49)
-don't fit; the SHA-1 example keeps its words as `[bool; 32]`. A literal shifted by an input value needs a suffix,
-e.g. `0x0Fu8 << amount`.
+circuits. A literal shifted by an input value needs a suffix, e.g. `0x0Fu8 << amount`.
+
+### Wide integers
+
+`u32`, `i32`, `u64`, `i64` and `usize` values may go beyond ±2^24 inside a circuit. Where a shift, a bitwise operator,
+a rotate, `wrapping_add/sub/mul`, a constant like `0x9E37_79B9` or an operand that is already wide takes a value
+there, it is held as its bytes: one wire per 8 bits of its two's-complement pattern. `wrapping_add` carries from byte
+to byte, `wrapping_mul` adds columns of byte products (each below 2^16, so exact) and carries, comparisons are the
+carry out of `a + !b + 1` (signed ones flip the top bit first), bitwise operators split bytes into bits, and shifts
+and rotates move bits, or whole bytes for multiples of 8. Casts truncate or sign-extend like `as`, and wide values go
+through `if`s, `match`es and table reads at computed indices.
+
+```rust
+#[handwired]
+fn fnv1a(bytes: [u8; 8]) -> [u8; 4] {
+    let mut hash = 0x811C_9DC5u32;
+    for byte in bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    [hash as u8, (hash >> 8) as u8, (hash >> 16) as u8, (hash >> 24) as u8]
+}
+```
+
+Parameters and results are still one cell each within ±2^24, so a wide value goes in and out as bytes (or masked
+within 24 bits); returning one fails the build with a message saying so. Plain `+`, `-` and `*` of one-wire values
+keep failing the build where their declared ranges may leave ±2^24, so a loose `#[range]` isn't silently turned into
+byte arithmetic, which costs far more. The tests check u32, i32 and u64 arithmetic, bitwise operators, shifts by
+inputs up to 63, rotates and casts against Rust (sampled over the full width, plus every carry boundary and the
+extremes), FNV-1a, and a 49-bit Connect Four bitboard; the GPU test runs a wide hash.
 
 See [Limitations](#limitations) for what isn't supported.
 
 ## GPU: `handwired-rs-gpu`
 
 The `gpu/` crate runs a compiled program as one WebGPU compute shader (wgpu 25), one invocation per record, so a
-batch of records runs in parallel. It reproduces the CPU reference evaluator bit for bit.
+batch of records runs in parallel. It reproduces the CPU reference evaluator bit for bit. The shader is one
+statement per operation, and drivers compile long straight-line shaders slowly: a 1,131-operation program takes
+about 16 s to set up on RADV, so the GPU suits small and medium circuits for now.
 
 ```rust
 let gpu = handwired_rs_gpu::Gpu::new()?;
@@ -296,10 +327,11 @@ Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests sk
 
 **SHA-1, ported from a library and checked against it.** `cargo run --release --example sha1` ports `sha1_smol`'s
 block function (`Sha1State::process` and the intrinsic emulations it calls, function for function, under its BSD
-license) to `#[handwired]`. Values are exact only within ±2^24, so a 32-bit word is 32 bits: XOR/AND/OR/NOT are per
-bit, rotations only rename bits, and `wrapping_add` adds byte by byte with carries. The circuit has 99,698 operations in
-4,011 layers. It gives the standard test vectors' digests, and the digests of 2,000 random messages of 0–300 bytes
-(6,061 blocks) match `sha1_smol`'s exactly, roughly 1,000x slower than `sha1_smol` itself on the batch executor.
+license) to `#[handwired]`, on plain `u32` words with `wrapping_add`, `rotate_left` and `^ & |`, held as bytes inside
+the circuit (see [Wide integers](#wide-integers)); bytes go in and out. The circuit has 68,036 operations in 1,616
+layers (an earlier version with words as `[bool; 32]` had 99,698 in 4,011). It gives the standard test vectors'
+digests, and the digests of 2,000 random messages of 0–300 bytes (6,061 blocks) match `sha1_smol`'s exactly: 371 ms
+on the batch executor against 1.5 ms for `sha1_smol` itself, about 250x slower.
 
 **Balancing a game through its rules.** `cargo run --release --example balance` writes a dice skirmish between two
 units as one `#[handwired]` function (290 operations) and tunes three units' damage and health until every matchup of
@@ -363,10 +395,11 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **The `#[handwired]` subset.**
 - Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value,
-  division or remainder by an input value, integers beyond ±2^24 in bitwise operators, enums whose variants carry data,
+  division or remainder by an input value, enums whose variants carry data,
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
-- Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s, and every value must stay within
-  ±2^24, the integers f32 holds exactly. `f32` parameters need `#[range]`s.
+- Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
+  results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
+  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value and wide values cast to `f32` aren't supported. `f32` parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
   value (`for x in arr`), not with `.iter()`.

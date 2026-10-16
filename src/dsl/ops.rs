@@ -8,6 +8,7 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Sub};
 use std::panic::Location;
 
+use super::wide::{self, Limbs};
 use super::{Kind, Num, Scalar, Val, is_wide, known_bit, settle, with_circuit};
 use crate::circuit::{Circuit, OutOfRange};
 use crate::emit::{Relation, emit_and, emit_compare, emit_or};
@@ -52,59 +53,86 @@ fn product<T: Scalar>(left: Wire, right: Wire) -> Val<T> {
     })
 }
 
-fn constant_wire<T: Scalar>(value: T) -> Wire {
-    Val::constant(value).wire
+// ---- Arithmetic -------------------------------------------------------------------------------------------------------
+
+/// Both sides as bytes, when either is already wide: arithmetic on them wraps, see [`wide`](super::wide).
+pub(super) fn wide_pair<T: Scalar>(left: Val<T>, right: Val<T>) -> Option<(Limbs, Limbs)> {
+    (left.is_wide() || right.is_wide()).then(|| (wide::limbs_as::<T, T>(left), wide::limbs_as::<T, T>(right)))
 }
 
-// ---- Arithmetic -------------------------------------------------------------------------------------------------------
+/// A native operand as a circuit value: bytes beyond ±2^24, where `wide_pair` takes over.
+fn beyond<T: Scalar>(value: T) -> bool {
+    T::KIND == Kind::Int && value.to_i128().unsigned_abs() >= 1 << 24
+}
 
 impl<T: Num> Add for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn add(self, right: Val<T>) -> Val<T> {
-        sum(self.wire + right.wire)
+        if let Some((a, b)) = wide_pair(self, right) {
+            return wide::add(&a, &b);
+        }
+        sum(self.wire() + right.wire())
     }
 }
 impl<T: Num> Add<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn add(self, right: T) -> Val<T> {
-        sum(self.wire + right.to_f64())
+        if self.is_wide() || beyond(right) {
+            return self + Val::constant(right);
+        }
+        sum(self.wire() + right.to_f64())
     }
 }
 impl<T: Num> Sub for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn sub(self, right: Val<T>) -> Val<T> {
-        sum(self.wire - right.wire)
+        if let Some((a, b)) = wide_pair(self, right) {
+            return wide::sub(&a, &b);
+        }
+        sum(self.wire() - right.wire())
     }
 }
 impl<T: Num> Sub<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn sub(self, right: T) -> Val<T> {
-        sum(self.wire - right.to_f64())
+        if self.is_wide() || beyond(right) {
+            return self - Val::constant(right);
+        }
+        sum(self.wire() - right.to_f64())
     }
 }
 impl<T: Num> Mul for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn mul(self, right: Val<T>) -> Val<T> {
-        product(self.wire, right.wire)
+        if let Some((a, b)) = wide_pair(self, right) {
+            return wide::mul(&a, &b);
+        }
+        product(self.wire(), right.wire())
     }
 }
 impl<T: Num> Mul<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn mul(self, right: T) -> Val<T> {
-        sum(self.wire * right.to_f64())
+        if self.is_wide() || beyond(right) {
+            return self * Val::constant(right);
+        }
+        sum(self.wire() * right.to_f64())
     }
 }
 impl<T: Num> Neg for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn neg(self) -> Val<T> {
-        sum(-self.wire)
+        if self.is_wide() {
+            return Val::constant(T::from_f64(0.0)) - self;
+        }
+        sum(-self.wire())
     }
 }
 impl<T: Num> Div<T> for Val<T> {
@@ -115,7 +143,7 @@ impl<T: Num> Div<T> for Val<T> {
         if T::KIND == Kind::Float {
             let divisor = right.to_f64();
             if divisor != 0.0 && divisor.is_finite() && lowest_power_of_two(divisor) == divisor.abs() {
-                return sum(self.wire * (1.0 / divisor));
+                return sum(self.wire() * (1.0 / divisor));
             }
             panic!("{at}: f32 division is only supported by a power of two, got {divisor}");
         }
@@ -158,7 +186,7 @@ impl<T: Num> Rem for Val<T> {
 /// table read: e.g. `x / 3` over x in 0..255 reads a table of 256 quotients.
 pub(crate) fn integer_table<T: Scalar>(value: Val<T>, at: &Location, f: impl Fn(i64) -> i64) -> Val<T> {
     const TABLE_LIMIT: f64 = 65_536.0;
-    let range = with_circuit(|circuit| circuit.range(value.wire));
+    let range = with_circuit(|circuit| circuit.range(value.wire()));
     if !(range.is_finite() && range.max - range.min < TABLE_LIMIT) {
         panic!("{at}: this needs a table over {}..{}, more than 65,536 entries", range.min, range.max);
     }
@@ -167,7 +195,7 @@ pub(crate) fn integer_table<T: Scalar>(value: Val<T>, at: &Location, f: impl Fn(
     with_circuit(|circuit| {
         let table: Vec<Wire> = results.iter().map(|&result| circuit.constant(result as f64)).collect();
         let read =
-            circuit.index_read_affine(value.wire - low as f64, &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
+            circuit.index_read_affine(value.wire() - low as f64, &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
         circuit.assume_grid_allowing_readers(read, 1.0);
         number(circuit, read, at)
     })
@@ -180,21 +208,21 @@ macro_rules! native_left_arithmetic {
             #[track_caller]
             fn add(self, right: Val<$t>) -> Val<$t> {
                 // Addition is commutative in IEEE arithmetic too.
-                sum(right.wire + self.to_f64())
+                sum(right.wire() + self.to_f64())
             }
         }
         impl Sub<Val<$t>> for $t {
             type Output = Val<$t>;
             #[track_caller]
             fn sub(self, right: Val<$t>) -> Val<$t> {
-                sum(self.to_f64() - right.wire)
+                sum(self.to_f64() - right.wire())
             }
         }
         impl Mul<Val<$t>> for $t {
             type Output = Val<$t>;
             #[track_caller]
             fn mul(self, right: Val<$t>) -> Val<$t> {
-                sum(right.wire * self.to_f64())
+                sum(right.wire() * self.to_f64())
             }
         }
         impl Div<Val<$t>> for $t {
@@ -239,8 +267,8 @@ impl<T: Num> Val<T> {
     pub fn abs(self) -> Val<T> {
         let at = Location::caller();
         with_circuit(|circuit| {
-            let positive = circuit.relu(self.wire);
-            let negative = circuit.relu(-self.wire);
+            let positive = circuit.relu(self.wire());
+            let negative = circuit.relu(-self.wire());
             let wire = if T::KIND == Kind::Float {
                 circuit.round_affine(positive + negative)
             } else {
@@ -253,12 +281,65 @@ impl<T: Num> Val<T> {
     /// Integers only: `self + other` wrapped into the type's range.
     #[track_caller]
     pub fn wrapping_add(self, other: impl super::Conv<Val<T>>) -> Val<T> {
-        self.wrap(self + other.conv())
+        let other = other.conv();
+        match self.wrapping_in_bytes(other, |left, right| left.min + right.min, |left, right| left.max + right.max) {
+            Some((a, b)) => wide::add(&a, &b),
+            None if is_wide::<T>() => self + other,
+            None => self.wrap(self + other),
+        }
     }
 
     #[track_caller]
     pub fn wrapping_sub(self, other: impl super::Conv<Val<T>>) -> Val<T> {
-        self.wrap(self - other.conv())
+        let other = other.conv();
+        match self.wrapping_in_bytes(other, |left, right| left.min - right.max, |left, right| left.max - right.min) {
+            Some((a, b)) => wide::sub(&a, &b),
+            None if is_wide::<T>() => self - other,
+            None => self.wrap(self - other),
+        }
+    }
+
+    /// Integers only: `self * other` wrapped into the type's range. Products that may leave ±2^24 are computed
+    /// in bytes, so they stay exact.
+    #[track_caller]
+    pub fn wrapping_mul(self, other: impl super::Conv<Val<T>>) -> Val<T> {
+        let other = other.conv();
+        let corners = |left: crate::numeric::Range, right: crate::numeric::Range| {
+            [left.min * right.min, left.min * right.max, left.max * right.min, left.max * right.max]
+        };
+        let low = |left, right| corners(left, right).into_iter().fold(f64::INFINITY, f64::min);
+        let high = |left, right| corners(left, right).into_iter().fold(f64::NEG_INFINITY, f64::max);
+        match self.wrapping_in_bytes(other, low, high) {
+            Some((a, b)) => {
+                let product: Val<T> = wide::mul(&a, &b);
+                if is_wide::<T>() { product } else { wide::narrow(&product.wide.unwrap()) }
+            }
+            None if is_wide::<T>() => self * other,
+            None => self.wrap(self * other),
+        }
+    }
+
+    /// The operands as bytes when a wrapping operation needs them: when either is wide, or when the result,
+    /// bounded by `low` and `high` over the operands' ranges, may leave the type or ±2^24. `None` where the
+    /// one-wire result already lies in the type's range, or wraps within ±2^24 for types up to 16 bits.
+    fn wrapping_in_bytes(
+        self,
+        other: Val<T>,
+        low: impl Fn(crate::numeric::Range, crate::numeric::Range) -> f64,
+        high: impl Fn(crate::numeric::Range, crate::numeric::Range) -> f64,
+    ) -> Option<(Limbs, Limbs)> {
+        assert!(T::KIND == Kind::Int, "wrapping arithmetic is for integers");
+        if let Some(pair) = wide_pair(self, other) {
+            return Some(pair);
+        }
+        let (left, right) = with_circuit(|circuit| (circuit.range(self.wire()), circuit.range(other.wire())));
+        let (low, high) = (low(left, right), high(left, right));
+        let fits_type = low >= T::MIN && high <= T::MAX;
+        let fits_wire = low > -16_777_216.0 && high < 16_777_216.0;
+        if fits_type && fits_wire || !is_wide::<T>() && fits_wire {
+            return None;
+        }
+        Some((wide::limbs_as::<T, T>(self), wide::limbs_as::<T, T>(other)))
     }
 
     #[track_caller]
@@ -280,22 +361,22 @@ impl<T: Num> Val<T> {
         );
         // Subtract the span once per threshold the value can cross, e.g. 256 × [x >= 256] for a u8 sum.
         let span = T::MAX - T::MIN + 1.0;
-        let range = with_circuit(|circuit| circuit.range(value.wire));
+        let range = with_circuit(|circuit| circuit.range(value.wire()));
         let below = ((T::MIN - range.min) / span).ceil().max(0.0) as i64;
         let above = ((range.max - T::MAX) / span).ceil().max(0.0) as i64;
-        let mut correction = Lin::new(vec![(value.wire, 1.0)], 0.0);
+        let mut correction = Lin::new(vec![(value.wire(), 1.0)], 0.0);
         for k in 1..=above {
             let threshold = Val::<T>::constant_f64(T::MIN + span * k as f64);
-            let crossed = with_circuit(|circuit| emit_compare(circuit, value.wire, Relation::AtLeast, threshold));
+            let crossed = with_circuit(|circuit| emit_compare(circuit, value.wire(), Relation::AtLeast, threshold));
             correction.terms.push((crossed, -span));
         }
         for k in 1..=below {
             let threshold = Val::<T>::constant_f64(T::MAX - span * k as f64);
-            let crossed = with_circuit(|circuit| emit_compare(circuit, value.wire, Relation::AtMost, threshold));
+            let crossed = with_circuit(|circuit| emit_compare(circuit, value.wire(), Relation::AtMost, threshold));
             correction.terms.push((crossed, span));
         }
         let wrapped = sum::<T>(correction);
-        with_circuit(|circuit| settle(circuit, wrapped.wire, T::MIN, T::MAX))
+        with_circuit(|circuit| settle(circuit, wrapped.wire(), T::MIN, T::MAX))
     }
 
     #[track_caller]
@@ -334,10 +415,10 @@ fn not_bit(bit: Val<bool>) -> Val<bool> {
     if let Some(value) = known_bit(bit) {
         return Val::constant(!value);
     }
-    with_circuit(|circuit| Val::from_wire(circuit.affine(1.0 - bit.wire)))
+    with_circuit(|circuit| Val::from_wire(circuit.affine(1.0 - bit.wire())))
 }
 
-fn equality(left: Wire, right: Wire, equal: bool) -> Val<bool> {
+pub(super) fn equality(left: Wire, right: Wire, equal: bool) -> Val<bool> {
     let bit = compare_wires(left, Relation::Equal, right);
     if equal { bit } else { not_bit(bit) }
 }
@@ -345,20 +426,33 @@ fn equality(left: Wire, right: Wire, equal: bool) -> Val<bool> {
 impl<T: Scalar> Cmp<Val<T>> for Val<T> {
     type Output = Val<bool>;
     fn compare(self, relation: Relation, right: Val<T>) -> Val<bool> {
-        compare_wires(self.wire, relation, right.wire)
+        if let Some((a, b)) = wide_pair(self, right) {
+            return match relation {
+                Relation::AtLeast => wide::at_least::<T>(&a, &b),
+                Relation::AtMost => wide::at_least::<T>(&b, &a),
+                Relation::Less => not_bit(wide::at_least::<T>(&a, &b)),
+                Relation::Greater => not_bit(wide::at_least::<T>(&b, &a)),
+                Relation::Equal => wide::equal(&a, &b),
+            };
+        }
+        compare_wires(self.wire(), relation, right.wire())
     }
     fn equal(self, right: Val<T>, equal: bool) -> Val<bool> {
-        equality(self.wire, right.wire, equal)
+        if let Some((a, b)) = wide_pair(self, right) {
+            let bit = wide::equal(&a, &b);
+            return if equal { bit } else { not_bit(bit) };
+        }
+        equality(self.wire(), right.wire(), equal)
     }
 }
 
 impl<T: Scalar> Cmp<T> for Val<T> {
     type Output = Val<bool>;
     fn compare(self, relation: Relation, right: T) -> Val<bool> {
-        compare_wires(self.wire, relation, constant_wire(right))
+        self.compare(relation, Val::constant(right))
     }
     fn equal(self, right: T, equal: bool) -> Val<bool> {
-        equality(self.wire, constant_wire(right), equal)
+        Cmp::equal(self, Val::constant(right), equal)
     }
 }
 
@@ -367,10 +461,10 @@ macro_rules! native_comparisons {
         impl Cmp<Val<$t>> for $t {
             type Output = Val<bool>;
             fn compare(self, relation: Relation, right: Val<$t>) -> Val<bool> {
-                compare_wires(constant_wire(self), relation, right.wire)
+                Val::constant(self).compare(relation, right)
             }
             fn equal(self, right: Val<$t>, equal: bool) -> Val<bool> {
-                equality(constant_wire(self), right.wire, equal)
+                Cmp::equal(Val::constant(self), right, equal)
             }
         }
         impl Cmp<$t> for $t {
@@ -442,7 +536,7 @@ pub(super) fn and_bits(left: Val<bool>, right: Val<bool>) -> Val<bool> {
         (_, Some(true)) => return left,
         _ => {}
     }
-    with_circuit(|circuit| Val::from_wire(emit_and(circuit, &[left.wire, right.wire])))
+    with_circuit(|circuit| Val::from_wire(emit_and(circuit, &[left.wire(), right.wire()])))
 }
 
 fn or_bits(left: Val<bool>, right: Val<bool>) -> Val<bool> {
@@ -453,7 +547,7 @@ fn or_bits(left: Val<bool>, right: Val<bool>) -> Val<bool> {
         _ => {}
     }
     with_circuit(|circuit| {
-        let wire = emit_or(circuit, &[left.wire, right.wire]);
+        let wire = emit_or(circuit, &[left.wire(), right.wire()]);
         settle(circuit, wire, 0.0, 1.0)
     })
 }
@@ -523,7 +617,7 @@ impl BitOr for Val<bool> {
 impl BitXor for Val<bool> {
     type Output = Val<bool>;
     fn bitxor(self, right: Val<bool>) -> Val<bool> {
-        equality(self.wire, right.wire, false)
+        equality(self.wire(), right.wire(), false)
     }
 }
 impl BitAnd<bool> for Val<bool> {
@@ -592,7 +686,7 @@ impl<T: super::IntScalar> RunningSum for Val<T> {
         let at = Location::caller();
         // Its own operation, so the network keeps its shape instead of being copied into wider sums.
         with_circuit(|circuit| {
-            let wire = circuit.round_affine(self.wire + later.wire);
+            let wire = circuit.round_affine(self.wire() + later.wire());
             number(circuit, wire, at)
         })
     }

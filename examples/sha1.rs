@@ -2,12 +2,12 @@
 //! crate (1.0.1) and checked against it.
 //!
 //! The port follows `Sha1State::process` and the intrinsic emulations it calls
-//! (`sha1msg1`, `sha1msg2`, `sha1rnds4c/p/m`, ...) function for function. A
-//! circuit value is an f32 that's exact only within ±2^24, so a 32-bit word is
-//! held as 32 bits: XOR, AND, OR and NOT work bit by bit, a rotation only
-//! renames bits, and `wrapping_add` adds the words byte by byte, carrying from
-//! byte to byte, with the bits of each byte sum read back by integer `%`
-//! (a table read) and a comparison.
+//! (`sha1msg1`, `sha1msg2`, `sha1rnds4c/p/m`, ...) function for function, on
+//! plain `u32` words with `wrapping_add`, `rotate_left` and `^ & |`. A circuit
+//! value is an f32 that's exact only within ±2^24, so inside the circuit each
+//! word is held as its 4 bytes: `wrapping_add` carries from byte to byte,
+//! bitwise operators split bytes into bits, and rotations move bits. The
+//! function takes and returns bytes, which fit one cell each.
 //!
 //! cargo run --release --example sha1
 //!
@@ -32,119 +32,38 @@ use std::time::Instant;
 use handwired_rs::dsl::Params;
 use handwired_rs::{BatchExecutor, handwired};
 
-/// A 32-bit word, least significant bit first: `word[i]` is bit `i`.
-type Word = [bool; 32];
 /// sha1_smol's `u32x4`.
-type Quad = [Word; 4];
-
-const fn word(value: u32) -> Word {
-    let mut bits = [false; 32];
-    let mut bit = 0;
-    while bit < 32 {
-        bits[bit] = (value >> bit) & 1 == 1;
-        bit += 1;
-    }
-    bits
-}
+type Quad = [u32; 4];
 
 // Round key constants
-const K0: Word = word(0x5A827999);
-const K1: Word = word(0x6ED9EBA1);
-const K2: Word = word(0x8F1BBCDC);
-const K3: Word = word(0xCA62C1D6);
-
-/// Powers of two, since `#[handwired]` has no shifts.
-const POW2: [u16; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
-const BYTE_WEIGHT: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+const K0: u32 = 0x5A827999u32;
+const K1: u32 = 0x6ED9EBA1u32;
+const K2: u32 = 0x8F1BBCDCu32;
+const K3: u32 = 0xCA62C1D6u32;
 
 const DEFAULT_STATE: [u32; 5] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
-
-// ---- Words ------------------------------------------------------------------------------------------------------
-
-#[handwired]
-fn rotl1(w: Word) -> Word {
-    let mut rotated = w;
-    for bit in 0..32 {
-        rotated[(bit + 1) % 32] = w[bit];
-    }
-    rotated
-}
-
-#[handwired]
-fn rotl5(w: Word) -> Word {
-    let mut rotated = w;
-    for bit in 0..32 {
-        rotated[(bit + 5) % 32] = w[bit];
-    }
-    rotated
-}
-
-#[handwired]
-fn rotl30(w: Word) -> Word {
-    let mut rotated = w;
-    for bit in 0..32 {
-        rotated[(bit + 30) % 32] = w[bit];
-    }
-    rotated
-}
-
-#[handwired]
-fn xor(a: Word, b: Word) -> Word {
-    let mut result = a;
-    for bit in 0..32 {
-        result[bit] = a[bit] ^ b[bit];
-    }
-    result
-}
-
-/// `a.wrapping_add(b).wrapping_add(c)`: per byte, the column sum plus the carry
-/// is at most 3 × 255 + 2, and its bits and carry are read back exactly.
-#[handwired]
-#[allow(clippy::needless_range_loop)]
-fn add3(a: Word, b: Word, c: Word) -> Word {
-    let mut sum = a;
-    let mut carry: u16 = 0;
-    for byte in 0..4 {
-        let mut total: u16 = carry;
-        for bit in 0..8 {
-            let at = byte * 8 + bit;
-            let weight: u16 = POW2[bit];
-            total = total + (a[at] as u16) * weight + (b[at] as u16) * weight + (c[at] as u16) * weight;
-        }
-        for bit in 0..8 {
-            sum[byte * 8 + bit] = total % POW2[bit + 1] >= POW2[bit];
-        }
-        carry = total / 256;
-    }
-    sum
-}
-
-#[handwired]
-fn add2(a: Word, b: Word) -> Word {
-    add3(a, b, [false; 32])
-}
 
 // ---- Ported from sha1_smol -------------------------------------------------------------------------------------
 
 /// Adds a word to the first element of a vector.
 #[handwired]
-fn sha1_first_add(e: Word, w0: Quad) -> Quad {
-    [add2(e, w0[0]), w0[1], w0[2], w0[3]]
+fn sha1_first_add(e: u32, w0: Quad) -> Quad {
+    [e.wrapping_add(w0[0]), w0[1], w0[2], w0[3]]
 }
 
 /// Emulates `llvm.x86.sha1msg1` intrinsic.
 #[handwired]
 fn sha1msg1(a: Quad, b: Quad) -> Quad {
-    [xor(a[0], a[2]), xor(a[1], a[3]), xor(a[2], b[0]), xor(a[3], b[1])]
+    [a[0] ^ a[2], a[1] ^ a[3], a[2] ^ b[0], a[3] ^ b[1]]
 }
 
 /// Emulates `llvm.x86.sha1msg2` intrinsic.
 #[handwired]
 fn sha1msg2(a: Quad, b: Quad) -> Quad {
-    let w16 = rotl1(xor(a[0], b[1]));
-    let w17 = rotl1(xor(a[1], b[2]));
-    let w18 = rotl1(xor(a[2], b[3]));
-    let w19 = rotl1(xor(a[3], w16));
+    let w16 = (a[0] ^ b[1]).rotate_left(1);
+    let w17 = (a[1] ^ b[2]).rotate_left(1);
+    let w18 = (a[2] ^ b[3]).rotate_left(1);
+    let w19 = (a[3] ^ w16).rotate_left(1);
     [w16, w17, w18, w19]
 }
 
@@ -152,50 +71,37 @@ fn sha1msg2(a: Quad, b: Quad) -> Quad {
 #[handwired]
 fn schedule(v0: Quad, v1: Quad, v2: Quad, v3: Quad) -> Quad {
     let first = sha1msg1(v0, v1);
-    let mixed = [xor(first[0], v2[0]), xor(first[1], v2[1]), xor(first[2], v2[2]), xor(first[3], v2[3])];
-    sha1msg2(mixed, v3)
+    sha1msg2([first[0] ^ v2[0], first[1] ^ v2[1], first[2] ^ v2[2], first[3] ^ v2[3]], v3)
 }
 
 /// Emulates `llvm.x86.sha1nexte` intrinsic.
 #[handwired]
 fn sha1_first_half(abcd: Quad, msg: Quad) -> Quad {
-    sha1_first_add(rotl30(abcd[0]), msg)
+    sha1_first_add(abcd[0].rotate_left(30), msg)
 }
 
-/// Choose, `c ^ (a & (b ^ c))`.
+/// Choose, `bool3ary_202!`.
 #[handwired]
-fn choose(a: Word, b: Word, c: Word) -> Word {
-    let mut result = a;
-    for bit in 0..32 {
-        result[bit] = c[bit] ^ (a[bit] & (b[bit] ^ c[bit]));
-    }
-    result
+fn choose(a: u32, b: u32, c: u32) -> u32 {
+    c ^ (a & (b ^ c))
 }
 
-/// Parity, `a ^ b ^ c`.
+/// Parity, `bool3ary_150!`.
 #[handwired]
-fn parity(a: Word, b: Word, c: Word) -> Word {
-    let mut result = a;
-    for bit in 0..32 {
-        result[bit] = a[bit] ^ b[bit] ^ c[bit];
-    }
-    result
+fn parity(a: u32, b: u32, c: u32) -> u32 {
+    a ^ b ^ c
 }
 
-/// Majority, `(a & b) ^ (a & c) ^ (b & c)`.
+/// Majority, `bool3ary_232!`.
 #[handwired]
-fn majority(a: Word, b: Word, c: Word) -> Word {
-    let mut result = a;
-    for bit in 0..32 {
-        result[bit] = (a[bit] & b[bit]) ^ (a[bit] & c[bit]) ^ (b[bit] & c[bit]);
-    }
-    result
+fn majority(a: u32, b: u32, c: u32) -> u32 {
+    (a & b) ^ (a & c) ^ (b & c)
 }
 
 /// `work + KnV` in `sha1_digest_round_x4`.
 #[handwired]
-fn add_key(work: Quad, k: Word) -> Quad {
-    [add2(work[0], k), add2(work[1], k), add2(work[2], k), add2(work[3], k)]
+fn add_key(work: Quad, k: u32) -> Quad {
+    [work[0].wrapping_add(k), work[1].wrapping_add(k), work[2].wrapping_add(k), work[3].wrapping_add(k)]
 }
 
 /// Emulates `llvm.x86.sha1rnds4` intrinsic: four rounds with Choose.
@@ -203,19 +109,19 @@ fn add_key(work: Quad, k: Word) -> Quad {
 fn sha1rnds4c(abcd: Quad, msg: Quad) -> Quad {
     let (mut a, mut b, mut c, mut d) = (abcd[0], abcd[1], abcd[2], abcd[3]);
     let (t, u, v, w) = (msg[0], msg[1], msg[2], msg[3]);
-    let mut e = [false; 32];
+    let mut e = 0u32;
 
-    e = add3(add2(e, rotl5(a)), choose(b, c, d), t);
-    b = rotl30(b);
+    e = e.wrapping_add(a.rotate_left(5)).wrapping_add(choose(b, c, d)).wrapping_add(t);
+    b = b.rotate_left(30);
 
-    d = add3(add2(d, rotl5(e)), choose(a, b, c), u);
-    a = rotl30(a);
+    d = d.wrapping_add(e.rotate_left(5)).wrapping_add(choose(a, b, c)).wrapping_add(u);
+    a = a.rotate_left(30);
 
-    c = add3(add2(c, rotl5(d)), choose(e, a, b), v);
-    e = rotl30(e);
+    c = c.wrapping_add(d.rotate_left(5)).wrapping_add(choose(e, a, b)).wrapping_add(v);
+    e = e.rotate_left(30);
 
-    b = add3(add2(b, rotl5(c)), choose(d, e, a), w);
-    d = rotl30(d);
+    b = b.wrapping_add(c.rotate_left(5)).wrapping_add(choose(d, e, a)).wrapping_add(w);
+    d = d.rotate_left(30);
 
     [b, c, d, e]
 }
@@ -225,19 +131,19 @@ fn sha1rnds4c(abcd: Quad, msg: Quad) -> Quad {
 fn sha1rnds4p(abcd: Quad, msg: Quad) -> Quad {
     let (mut a, mut b, mut c, mut d) = (abcd[0], abcd[1], abcd[2], abcd[3]);
     let (t, u, v, w) = (msg[0], msg[1], msg[2], msg[3]);
-    let mut e = [false; 32];
+    let mut e = 0u32;
 
-    e = add3(add2(e, rotl5(a)), parity(b, c, d), t);
-    b = rotl30(b);
+    e = e.wrapping_add(a.rotate_left(5)).wrapping_add(parity(b, c, d)).wrapping_add(t);
+    b = b.rotate_left(30);
 
-    d = add3(add2(d, rotl5(e)), parity(a, b, c), u);
-    a = rotl30(a);
+    d = d.wrapping_add(e.rotate_left(5)).wrapping_add(parity(a, b, c)).wrapping_add(u);
+    a = a.rotate_left(30);
 
-    c = add3(add2(c, rotl5(d)), parity(e, a, b), v);
-    e = rotl30(e);
+    c = c.wrapping_add(d.rotate_left(5)).wrapping_add(parity(e, a, b)).wrapping_add(v);
+    e = e.rotate_left(30);
 
-    b = add3(add2(b, rotl5(c)), parity(d, e, a), w);
-    d = rotl30(d);
+    b = b.wrapping_add(c.rotate_left(5)).wrapping_add(parity(d, e, a)).wrapping_add(w);
+    d = d.rotate_left(30);
 
     [b, c, d, e]
 }
@@ -247,67 +153,38 @@ fn sha1rnds4p(abcd: Quad, msg: Quad) -> Quad {
 fn sha1rnds4m(abcd: Quad, msg: Quad) -> Quad {
     let (mut a, mut b, mut c, mut d) = (abcd[0], abcd[1], abcd[2], abcd[3]);
     let (t, u, v, w) = (msg[0], msg[1], msg[2], msg[3]);
-    let mut e = [false; 32];
+    let mut e = 0u32;
 
-    e = add3(add2(e, rotl5(a)), majority(b, c, d), t);
-    b = rotl30(b);
+    e = e.wrapping_add(a.rotate_left(5)).wrapping_add(majority(b, c, d)).wrapping_add(t);
+    b = b.rotate_left(30);
 
-    d = add3(add2(d, rotl5(e)), majority(a, b, c), u);
-    a = rotl30(a);
+    d = d.wrapping_add(e.rotate_left(5)).wrapping_add(majority(a, b, c)).wrapping_add(u);
+    a = a.rotate_left(30);
 
-    c = add3(add2(c, rotl5(d)), majority(e, a, b), v);
-    e = rotl30(e);
+    c = c.wrapping_add(d.rotate_left(5)).wrapping_add(majority(e, a, b)).wrapping_add(v);
+    e = e.rotate_left(30);
 
-    b = add3(add2(b, rotl5(c)), majority(d, e, a), w);
-    d = rotl30(d);
+    b = b.wrapping_add(c.rotate_left(5)).wrapping_add(majority(d, e, a)).wrapping_add(w);
+    d = d.rotate_left(30);
 
     [b, c, d, e]
 }
 
-#[handwired]
-fn byte_bits(value: u8) -> [bool; 8] {
-    let wide = value as u16;
-    let mut bits = [false; 8];
-    for bit in 0..8 {
-        bits[bit] = wide % POW2[bit + 1] >= POW2[bit];
-    }
-    bits
-}
-
 /// Four big-endian bytes as a word.
 #[handwired]
-fn word_from_bytes(bytes: [u8; 4]) -> Word {
-    let mut result = [false; 32];
-    for byte in 0..4 {
-        let bits = byte_bits(bytes[byte]);
-        for bit in 0..8 {
-            result[(3 - byte) * 8 + bit] = bits[bit];
-        }
-    }
-    result
+fn word_from_bytes(bytes: [u8; 4]) -> u32 {
+    (bytes[0] as u32) << 24 | (bytes[1] as u32) << 16 | (bytes[2] as u32) << 8 | bytes[3] as u32
 }
 
-#[handwired]
-fn word_to_bytes(w: Word) -> [u8; 4] {
-    let mut bytes = [0u8; 4];
-    for byte in 0..4 {
-        let mut value: u8 = 0;
-        for bit in 0..8 {
-            value += (w[(3 - byte) * 8 + bit] as u8) * BYTE_WEIGHT[bit];
-        }
-        bytes[byte] = value;
-    }
-    bytes
-}
-
-/// `Sha1State::process` on a state and a block given as bytes, the state as five big-endian words.
+/// `Sha1State::process` on a state and a block given as bytes, the state as five big-endian words. Inside, the
+/// words are `u32`s beyond ±2^24, held as bytes; only bytes go in and out.
 #[handwired]
 fn sha1_block(state: [u8; 20], block: [u8; 64]) -> [u8; 20] {
-    let mut words = [[false; 32]; 16];
+    let mut words = [0u32; 16];
     for i in 0..16 {
         words[i] = word_from_bytes([block[4 * i], block[4 * i + 1], block[4 * i + 2], block[4 * i + 3]]);
     }
-    let mut s = [[false; 32]; 5];
+    let mut s = [0u32; 5];
     for i in 0..5 {
         s[i] = word_from_bytes([state[4 * i], state[4 * i + 1], state[4 * i + 2], state[4 * i + 3]]);
     }
@@ -361,13 +238,18 @@ fn sha1_block(state: [u8; 20], block: [u8; 64]) -> [u8; 20] {
     w4 = schedule(w0, w1, w2, w3);
     h0 = sha1rnds4p(h1, add_key(sha1_first_half(h0, w4), K3));
 
-    let e = rotl30(h1[0]);
-    let next = [add2(s[0], h0[0]), add2(s[1], h0[1]), add2(s[2], h0[2]), add2(s[3], h0[3]), add2(s[4], e)];
+    let e = h1[0].rotate_left(30);
+    let next = [
+        s[0].wrapping_add(h0[0]),
+        s[1].wrapping_add(h0[1]),
+        s[2].wrapping_add(h0[2]),
+        s[3].wrapping_add(h0[3]),
+        s[4].wrapping_add(e),
+    ];
     let mut result = [0u8; 20];
     for i in 0..5 {
-        let bytes = word_to_bytes(next[i]);
         for byte in 0..4 {
-            result[4 * i + byte] = bytes[byte];
+            result[4 * i + byte] = (next[i] >> (24 - 8 * byte)) as u8;
         }
     }
     result

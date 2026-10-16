@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Wide integers: `u32`, `i32`, `u64`, `i64` and `usize` values may go beyond ±2^24 inside a circuit, held as bytes,
+  where shifts, bitwise operators, rotates, `wrapping_add/sub/mul`, constants beyond ±2^24 or already wide operands
+  take them. Byte arithmetic carries from byte to byte (multiplication adds columns of byte products), comparisons
+  are the carry of `a + !b + 1`, and wide values go through casts, `if`s, `match`es and table reads. Parameters and
+  results stay one cell within ±2^24 (returning a wide value fails the build with a message), and plain `+ - *` of
+  one-wire values keep their ±2^24 check. New: `rotate_left`, `rotate_right` and `wrapping_mul` on circuit integers,
+  for every integer type. The SHA-1 example now uses `u32` words: 68,036 operations in 1,616 layers (was 99,698 in
+  4,011 with `[bool; 32]` words), about 2x faster.
+- `Val`'s wire is now read with `Val::wire()`, which panics for a wide value (breaking for code that read the field);
+  `Val::is_wide()` tells them apart.
+- Integer `if` merges keep their result within the type's range, so loop-carried integers no longer widen every pass.
 - `while`, `while let` and `loop` in `#[handwired]` functions with `#[max_iterations(N)]`: the circuit runs a `for`
   loop over `0..N` that breaks where the loop would end; the function counts its passes and panics via
   `dsl::iteration_limit` if it would start pass N + 1, which `verify` reports as the new
@@ -9,7 +20,6 @@
   exhaustive matches).
 - `let (mut a, mut b) = (x, 0)` in `#[handwired]` functions: each `mut` name in a tuple pattern starts as a circuit
   value, like a plain `let mut`, so loops and branches can assign it.
-- Integer `if` merges keep their result within the type's range, so loop-carried integers no longer widen every pass.
 
 ## 0.5.0 (2026-10-16): handwired-rs and handwired-rs-gpu 0.5.0, handwired-rs-macros 0.3.0
 

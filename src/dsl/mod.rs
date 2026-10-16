@@ -19,6 +19,7 @@ mod bits;
 mod compiled;
 mod control;
 mod ops;
+mod wide;
 
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -26,6 +27,7 @@ use std::marker::PhantomData;
 
 use crate::circuit::Circuit;
 use crate::wire::Wire;
+use wide::Limbs;
 
 pub use bits::{Shift, shl, shr};
 pub use compiled::{
@@ -74,6 +76,10 @@ pub trait Scalar: Copy + PartialEq + Debug + 'static {
     fn default_value() -> Self {
         Self::from_f64(0.0)
     }
+    /// The value as an exact integer, for integers beyond 2^53 too.
+    fn to_i128(self) -> i128 {
+        self.to_f64() as i128
+    }
 }
 
 /// An integer type whose values can index a table.
@@ -83,6 +89,12 @@ pub trait IntScalar: Scalar {}
 pub trait Num: Scalar {}
 
 /// Integer types wider than 2^24 can hold values f32 can't represent exactly.
+/// The type's width in bits, e.g. 8 for u8 and i8.
+pub(crate) fn width<T: Scalar>() -> usize {
+    let magnitude = (T::MAX + 1.0).log2() as usize;
+    if T::MIN < 0.0 { magnitude + 1 } else { magnitude }
+}
+
 pub(crate) fn is_wide<T: Scalar>() -> bool {
     T::KIND == Kind::Int && T::MAX - T::MIN > 16_777_216.0
 }
@@ -128,6 +140,9 @@ macro_rules! integer_scalars {
             fn from_f64(value: f64) -> $int {
                 value as $int
             }
+            fn to_i128(self) -> i128 {
+                self as i128
+            }
         }
         impl IntScalar for $int {}
         impl Num for $int {}
@@ -135,9 +150,12 @@ macro_rules! integer_scalars {
 }
 integer_scalars!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
 
-/// A circuit value standing for a Rust value of type `T`.
+/// A circuit value standing for a Rust value of type `T`: one wire, or for
+/// an integer type wider than 24 bits whose value may leave ±2^24, its bytes,
+/// one wire per 8 bits of its two's-complement pattern.
 pub struct Val<T> {
-    pub wire: Wire,
+    narrow: Wire,
+    pub(crate) wide: Option<Limbs>,
     marker: PhantomData<T>,
 }
 
@@ -150,17 +168,50 @@ impl<T> Copy for Val<T> {}
 
 impl<T> Debug for Val<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Val({})", self.wire.index())
+        match &self.wide {
+            None => write!(formatter, "Val({})", self.narrow.index()),
+            Some(limbs) => {
+                let indices: Vec<usize> = limbs.wires().iter().map(|wire| wire.index()).collect();
+                write!(formatter, "Val(bytes {indices:?})")
+            }
+        }
+    }
+}
+
+impl<T> Val<T> {
+    /// The value's wire. Panics for a wide integer, which is several wires.
+    #[track_caller]
+    pub fn wire(&self) -> Wire {
+        if self.wide.is_some() {
+            panic!(
+                "{}: this value may leave ±2^24, so it is held as bytes, and this operation needs it as one wire; \
+                 narrow it first, e.g. with `as u8` or a mask",
+                std::panic::Location::caller()
+            );
+        }
+        self.narrow
+    }
+
+    /// Whether the value is held as bytes.
+    pub fn is_wide(&self) -> bool {
+        self.wide.is_some()
     }
 }
 
 impl<T: Scalar> Val<T> {
     pub fn from_wire(wire: Wire) -> Val<T> {
-        Val { wire, marker: PhantomData }
+        Val { narrow: wire, wide: None, marker: PhantomData }
     }
 
-    /// A wire that always holds `value`.
+    pub(crate) fn from_limbs(limbs: Limbs) -> Val<T> {
+        Val { narrow: limbs.wires()[0], wide: Some(limbs), marker: PhantomData }
+    }
+
+    /// A wire that always holds `value`, or bytes for an integer beyond ±2^24.
     pub fn constant(value: T) -> Val<T> {
+        if T::KIND == Kind::Int && value.to_i128().unsigned_abs() >= 1 << 24 {
+            return Val::from_limbs(wide::constant_limbs::<T>(value.to_i128()));
+        }
         with_circuit(|circuit| {
             let wire = circuit.constant(value.to_f64());
             if T::KIND != Kind::Float {
@@ -174,7 +225,7 @@ impl<T: Scalar> Val<T> {
 /// The value of a bit that is a constant wire, e.g. a flag that no
 /// input-dependent branch has set yet, so selects on it fold away.
 pub(crate) fn known_bit(bit: Val<bool>) -> Option<bool> {
-    with_circuit(|circuit| circuit.constant_value(bit.wire)).map(|value| value as f32 != 0.0)
+    with_circuit(|circuit| circuit.constant_value(bit.wire())).map(|value| value as f32 != 0.0)
 }
 
 /// Narrow a wire to what its type promises about every non-panicking value,

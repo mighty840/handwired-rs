@@ -513,3 +513,38 @@ fn bitwise_and_enum_batches_match_the_function() {
         assert_eq!(result, scramble(record.0, record.1, record.2, record.3), "{record:?}");
     }
 }
+
+/// Integers beyond ±2^24, held as bytes: two FNV-1a steps (a multiply that carries through every byte) and a 64-bit
+/// mix with a rotate, a shift by an input amount, an add and a comparison. Small, since the shader is one statement
+/// per operation and its compile time grows quickly with the program.
+#[handwired]
+#[allow(clippy::needless_range_loop)]
+fn wide_hash(bytes: [u8; 8], #[range(0, 3)] amount: u8) -> ([u8; 4], [u8; 8], bool) {
+    let mut hash = 0x811C_9DC5u32;
+    let mut word = 0u64;
+    for i in 0..8 {
+        if i < 2 {
+            hash ^= bytes[i] as u32;
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        word |= (bytes[i] as u64) << (8 * i);
+    }
+    let mixed = (word.rotate_left(17) ^ (word >> amount)).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut out = [0u8; 8];
+    for i in 0..8 {
+        out[i] = (mixed >> (8 * i)) as u8;
+    }
+    ([hash as u8, (hash >> 8) as u8, (hash >> 16) as u8, (hash >> 24) as u8], out, mixed > word)
+}
+
+#[test]
+fn wide_integer_batches_match_the_function() {
+    let Some(gpu) = gpu() else { return };
+    let batch = GpuBatch::new(&gpu, &wide_hash_circuit()).unwrap();
+    let mut rng = Rng(11);
+    let records: Vec<([u8; 8], u8)> =
+        (0..4096).map(|_| (std::array::from_fn(|_| rng.below(256) as u8), rng.below(4) as u8)).collect();
+    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+        assert_eq!(result, wide_hash(record.0, record.1), "{record:?}");
+    }
+}

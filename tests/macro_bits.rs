@@ -178,15 +178,15 @@ fn wide_types_within_two_to_the_24() {
     assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
 }
 
-/// A u32 shifted past 2^24 can't be held exactly.
+/// A u32 shifted past 2^24 is held as bytes inside the circuit, but a result is one cell within ±2^24.
 #[handwired]
 fn too_wide(#[range(0, 1_000_000)] a: u32) -> u32 {
     a << 8
 }
 
 #[test]
-#[should_panic(expected = "beyond ±2^24")]
-fn shifting_past_two_to_the_24_is_rejected_at_build() {
+#[should_panic(expected = "result may leave ±2^24")]
+fn a_result_beyond_two_to_the_24_is_rejected_at_build() {
     too_wide_circuit();
 }
 
@@ -205,14 +205,16 @@ fn far_shifts_match_rust_on_every_value() {
     }
 }
 
-/// `!` on a u32 is always at least 2^32 - 2^24.
+/// `!` on a u32 is at least 2^32 - 2^24, held as bytes; its top byte is a result again.
 #[handwired]
-fn wide_not(#[range(0, 1000)] a: u32) -> u32 {
-    !a
+fn wide_not(#[range(0, 1000)] a: u32) -> (u8, u8) {
+    let flipped = !a;
+    ((flipped >> 24) as u8, flipped as u8)
 }
 
 #[test]
-#[should_panic(expected = "mask instead")]
-fn not_on_wide_unsigned_types_is_rejected_at_build() {
-    wide_not_circuit();
+fn not_on_wide_unsigned_types_goes_through_bytes() {
+    let compiled = wide_not_circuit();
+    assert_eq!(compiled.verify(2_000).unwrap().skipped, 0);
+    assert_eq!(compiled.eval(&(5,)).unwrap(), (255, 250));
 }

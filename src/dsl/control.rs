@@ -3,7 +3,7 @@
 use std::panic::Location;
 
 use super::ops::integer_table;
-use super::{IntScalar, Kind, Scalar, Val, eq, gt, is_wide, known_bit, settle, with_circuit};
+use super::{IntScalar, Kind, Scalar, Val, eq, gt, is_wide, known_bit, settle, wide, with_circuit};
 use crate::circuit::OutOfRange;
 use crate::emit::{Relation, emit_compare, emit_round};
 use crate::wire::{Lin, Wire};
@@ -39,15 +39,18 @@ fn eq_position<I: IntScalar>(index: Val<I>, position: usize) -> Val<bool> {
 
 impl<T: Scalar> Mux for Val<T> {
     fn select(bit: Val<bool>, off: Val<T>, on: Val<T>) -> Val<T> {
-        if off.wire == on.wire {
-            return off;
-        }
         if let Some(value) = known_bit(bit) {
             return if value { on } else { off };
         }
+        if off.is_wide() || on.is_wide() {
+            return wide::select(bit, &wide::limbs_as::<T, T>(off), &wide::limbs_as::<T, T>(on));
+        }
+        if off.wire() == on.wire() {
+            return off;
+        }
         with_circuit(|circuit| {
-            let (off_range, on_range) = (circuit.range(off.wire), circuit.range(on.wire));
-            let wire = circuit.select(bit.wire, off.wire, on.wire);
+            let (off_range, on_range) = (circuit.range(off.wire()), circuit.range(on.wire()));
+            let wire = circuit.select(bit.wire(), off.wire(), on.wire());
             // Either side is a T wherever the function doesn't panic, so the result stays in T's range too; this
             // keeps loop-carried integers, e.g. gcd's `a -= b` over 254 unrolled passes, from widening every pass.
             let (low, high) = (off_range.min.min(on_range.min), off_range.max.max(on_range.max));
@@ -59,9 +62,13 @@ impl<T: Scalar> Mux for Val<T> {
     }
 
     fn read_dynamic<I: IntScalar>(items: &[Val<T>], index: Val<I>) -> Val<T> {
-        let candidates: Vec<Wire> = items.iter().map(|item| item.wire).collect();
+        if items.iter().any(Val::is_wide) {
+            let bytes: Vec<wide::Limbs> = items.iter().map(|&item| wide::limbs_as::<T, T>(item)).collect();
+            return wide::read(&bytes, index.wire());
+        }
+        let candidates: Vec<Wire> = items.iter().map(|item| item.wire()).collect();
         with_circuit(|circuit| {
-            let wire = circuit.index_read(index.wire, &candidates, OutOfRange::Clamp);
+            let wire = circuit.index_read(index.wire(), &candidates, OutOfRange::Clamp);
             let range = circuit.range(wire);
             settle(circuit, wire, range.min, range.max)
         })
@@ -447,13 +454,21 @@ impl<S: Scalar, T: Scalar> CastTo<T> for Val<S> {
 }
 
 fn cast_value<S: Scalar, T: Scalar>(value: Val<S>, at: &'static Location<'static>) -> Val<T> {
-    let same = Val::<T>::from_wire(value.wire);
+    if value.is_wide() {
+        // `as` between integers keeps the low bits, sign-extended from a signed source: the bytes, resized.
+        return match T::KIND {
+            Kind::Int if is_wide::<T>() => Val::from_limbs(wide::limbs_as::<S, T>(value)),
+            Kind::Int => wide::narrow(&wide::limbs_as::<S, S>(value)),
+            _ => panic!("{at}: casting an integer beyond ±2^24 to {} isn't supported yet", T::NAME),
+        };
+    }
+    let same = Val::<T>::from_wire(value.wire());
     match (S::KIND, T::KIND) {
         (Kind::Bool, _) => same,
         (_, Kind::Bool) => unsupported("only bool casts to bool"),
         (Kind::Float, Kind::Float) => same,
         (Kind::Int, Kind::Float) => {
-            let range = with_circuit(|circuit| circuit.range(value.wire));
+            let range = with_circuit(|circuit| circuit.range(value.wire()));
             if range.min >= -16_777_216.0 && range.max <= 16_777_216.0 {
                 same
             } else {
@@ -464,21 +479,22 @@ fn cast_value<S: Scalar, T: Scalar>(value: Val<S>, at: &'static Location<'static
             if S::MIN >= T::MIN && S::MAX <= T::MAX {
                 return same;
             }
-            let range = with_circuit(|circuit| circuit.range(value.wire));
+            let range = with_circuit(|circuit| circuit.range(value.wire()));
             if range.min >= T::MIN && range.max <= T::MAX {
                 return same;
             }
             if is_wide::<T>() {
-                panic!("{at}: this cast to {} may wrap, which is supported for types up to 16 bits", T::NAME);
+                // The wrapped value may leave ±2^24, e.g. `-1i32 as u32`, so it is held as bytes.
+                return Val::from_limbs(wide::limbs_as::<S, T>(value));
             }
             // `as` between integers keeps the low bits: the same value modulo the target's span.
             let span = T::MAX - T::MIN + 1.0;
-            integer_table(Val::<T>::from_wire(value.wire), at, |wide| {
+            integer_table(Val::<T>::from_wire(value.wire()), at, |wide| {
                 let wrapped = (wide as f64 - T::MIN).rem_euclid(span) + T::MIN;
                 wrapped as i64
             })
         }
-        (Kind::Float, Kind::Int) => truncate::<T>(value.wire, at),
+        (Kind::Float, Kind::Int) => truncate::<T>(value.wire(), at),
     }
 }
 

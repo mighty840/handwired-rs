@@ -303,7 +303,7 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<Tokens>
                     #dsl::Scalar::from_f64(values.next().expect("too few output values") as f64)
                 }
                 fn outputs(value: &#dsl::Val<#name>, out: &mut Vec<::handwired_rs::Wire>) {
-                    out.push(value.wire);
+                    out.push(value.wire());
                 }
                 fn sample(rng: &mut #dsl::Rng, attrs: &#dsl::Attrs) -> #name {
                     #dsl::sample_variant(rng, attrs, &VARIANTS)
