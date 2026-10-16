@@ -25,6 +25,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - name: Test
         run: cargo test --workspace
+      - name: Test without overflow checks (release)
+        run: cargo test --workspace --release
       - name: Run the 100,000-record search example
         run: cargo run --release -p handwired-rs-gpu --example search
       - name: Run the key-value store example
@@ -47,7 +49,7 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --lib -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   package:
     name: Package the macro crate

@@ -6,6 +6,7 @@ use handwired_rs::handwired;
 
 /// 0 = the number itself, 1 = Fizz, 2 = Buzz, 3 = FizzBuzz.
 #[handwired]
+#[allow(clippy::manual_is_multiple_of)]
 fn fizzbuzz(#[range(1, 100)] n: u8) -> u8 {
     if n % 15 == 0 {
         3

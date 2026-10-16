@@ -1,6 +1,9 @@
 //! `#[handwired]` on scalar code: every circuit is verified against the
 //! original function it came from.
 
+// The edge coordinates are exact f32 values, written out in full.
+#![allow(clippy::excessive_precision)]
+
 use handwired_rs::handwired;
 
 /// handwired's README example: `(a > 4) ? 10 : 12`.
@@ -101,6 +104,8 @@ fn overflowing(a: u8, b: u8) -> u8 {
     if a > b { a - b } else { a + b }
 }
 
+// Without overflow checks (a release build) the function wraps instead, and verify reports the mismatch.
+#[cfg(debug_assertions)]
 #[test]
 fn panicking_inputs_are_skipped() {
     let report = overflowing_circuit().verify(5_000).unwrap();

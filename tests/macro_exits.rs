@@ -1,6 +1,14 @@
 //! `return`, `break` and `continue` under conditions that depend on the inputs.
 //! Every circuit is verified against the function it came from.
 
+// The functions are written the way people write them, to exercise the macro, not the way clippy prefers.
+#![allow(
+    clippy::needless_return,
+    clippy::needless_range_loop,
+    clippy::needless_late_init,
+    clippy::manual_range_patterns
+)]
+
 use handwired_rs::handwired;
 
 fn check<Args, R>(compiled: handwired_rs::dsl::Compiled<Args, R>)

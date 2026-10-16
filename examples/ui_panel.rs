@@ -19,7 +19,7 @@ const SLIDER_LEFT: i16 = 40;
 /// this frame, applied to the panel's state. Returns the next state:
 /// (on, armed, dragging, level in 0..=100, the toggle thumb's position 0..1).
 #[handwired]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::manual_range_contains)]
 fn ui_frame(
     on: bool,
     armed: bool,

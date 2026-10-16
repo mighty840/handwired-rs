@@ -11,6 +11,11 @@ computing exactly what the ordinary code computes. The ideas, the instruction se
 comparison constructions are handwired's; this crate ports them to Rust and checks itself against handwired's
 published numbers.
 
+```sh
+cargo add handwired-rs            # the circuit builder, #[handwired] and the CPU executors
+cargo add handwired-rs-gpu        # optional: run compiled programs on a GPU through wgpu
+```
+
 **Status:** 0.1, experimental, checked by the tests listed below on one machine and in CI. Read
 [Limitations](#limitations) before relying on it.
 
@@ -104,8 +109,10 @@ Shader compilers break f32 exactness in ways handwired measured on Metal, and th
 inexact product and every addition in `max(x, lowest)`, with `lowest` read from a uniform buffer, which the compiler
 can't see through; with those guards turned off, the random-circuit test fails on both drivers. Booleans are written
 as `select(0, 1, score >= 0.5)`, since compilers fold `(score + K) - K`, and every literal is one exact f32. Not
-guarded: GPUs may flush subnormals to zero, which would change a comparison of values closer than 2^-126 (untested
-here), and WGSL lets drivers assume no NaN or infinity occurs.
+guarded: GPUs may flush subnormal values (below 2^-126) to zero. Both GPUs tested here do: a subnormal operand reads as
+0, and two values closer than 2^-126 compare equal, as native GPU comparisons do too. The tests check that every
+comparison touching a subnormal value follows that rule, and every other one is exact. WGSL also lets drivers assume
+no NaN or infinity occurs.
 
 `cargo run --release -p handwired-rs-gpu --example search` searches 100,000 32-byte records for a 3-byte pattern with a
 `#[handwired]` function (890 operations in 127 layers) and checks every result against the function. On an AMD Ryzen
@@ -175,7 +182,8 @@ circuit is far slower than the function it came from, and on the GPU the search 
 than plain Rust: the point is exactness, differentiability and a tensor-shaped program, not speed.
 
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
-Apple or browsers. Subnormal flushing isn't tested, and would change comparisons of values closer than 2^-126. WGSL
+Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
+closer than 2^-126 compare equal, matching handwired's `flushSubnormals` executor; anything else is exact. WGSL
 lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU.
 
 **Differentiability.** The reference evaluator has a backward pass, tested on small cases; nothing here trains a
@@ -207,7 +215,8 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   switch in plain Rust, over a scripted trace and random traces near the track edges.
 
 - `gpu/tests/exact.rs`: random circuits, comparisons at their edges and `#[handwired]` batches on the GPU, compared bit
-  for bit with the CPU reference (skipped without an adapter).
+  for bit with the CPU reference (skipped without an adapter), and comparisons of subnormal values, checked against
+  the flushing model when the GPU flushes them.
 
 `cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
 toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262

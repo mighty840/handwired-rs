@@ -2,6 +2,8 @@
 //! random traces, and compares them every frame. Ported from handwired's
 //! template/toggle.test.ts, without the spring.
 
+#![allow(clippy::type_complexity)]
+
 mod common;
 #[path = "../examples/toggle.rs"]
 mod toggle;

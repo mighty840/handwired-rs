@@ -214,3 +214,80 @@ fn handwired_functions_run_as_batches() {
         assert_eq!(result, mix(record.0, record.1, record.2), "{record:?}");
     }
 }
+
+/// Whether the GPU flushes subnormal results to zero: 2^-126 / 2.
+fn flushes_subnormals(gpu: &Gpu) -> bool {
+    let mut circuit = Circuit::new(1);
+    let x = circuit.source(0);
+    circuit.assume_range(x, 0.0, 1.0);
+    let half = circuit.affine(x * 0.5);
+    let program = GpuProgram::new(gpu, &circuit, &[half]).unwrap();
+    program.run(gpu, &[f32::MIN_POSITIVE]).unwrap()[0] == 0.0
+}
+
+/// Comparisons near zero, where the operands or their difference are subnormal. A GPU that flushes subnormal
+/// values to zero, like handwired's `flushSubnormals` test executor, reads a subnormal operand as 0 and a subnormal
+/// difference as equality: every pair touching a subnormal value follows that model, and every other pair is exact.
+#[test]
+fn subnormal_comparisons_follow_the_flushing_model() {
+    let Some(gpu) = gpu() else { return };
+    let flushes = flushes_subnormals(&gpu);
+    eprintln!("flushes subnormals: {flushes}");
+    let smallest_normal = f32::MIN_POSITIVE;
+    let subnormal = |value: f32| value != 0.0 && value.abs() < smallest_normal;
+    let flush = |value: f32| if subnormal(value) { 0.0 } else { value };
+    let touches_subnormal = |x: f32, y: f32| subnormal(x) || subnormal(y) || subnormal(x - y);
+    let mut pairs = Vec::new();
+    for x in [
+        0.0,
+        f32::from_bits(1),
+        f32::from_bits(2),
+        f32::from_bits(0x007F_FFFF),
+        smallest_normal,
+        f32::from_bits(smallest_normal.to_bits() + 1),
+        smallest_normal * 3.0,
+        1e-37,
+    ] {
+        for y in [x, f32::from_bits(x.to_bits() + 1), f32::from_bits(x.to_bits() + 2), x * 2.0, smallest_normal * 4.0] {
+            for (x, y) in [(x, y), (y, x), (-x, -y), (-y, -x), (x, -y)] {
+                pairs.push((x, y));
+            }
+        }
+    }
+    let mut flushed_pairs = 0;
+    for end_with_boolean in [false, true] {
+        let mut circuit = Circuit::new(2);
+        let (a, b) = (circuit.source(0), circuit.source(1));
+        for wire in [a, b] {
+            circuit.assume_range(wire, -1e-36, 1e-36);
+        }
+        let relations = [Relation::Greater, Relation::AtLeast, Relation::Less, Relation::AtMost, Relation::Equal];
+        let bits: Vec<Wire> = relations
+            .iter()
+            .map(|&relation| emit_compare_with(&mut circuit, a, relation, b, CompareOptions { end_with_boolean }))
+            .collect();
+        let exact: Vec<Vec<f32>> =
+            pairs.iter().filter(|&&(x, y)| !flushes || !touches_subnormal(x, y)).map(|&(x, y)| vec![x, y]).collect();
+        check(&gpu, &circuit, &bits, &exact);
+        let program = GpuProgram::new(&gpu, &circuit, &bits).unwrap();
+        let sources: Vec<f32> = pairs.iter().flat_map(|&(x, y)| [x, y]).collect();
+        let outputs = program.run(&gpu, &sources).unwrap();
+        for (&(x, y), got) in pairs.iter().zip(outputs.chunks(bits.len())) {
+            let (seen_x, seen_y) = if flushes { (flush(x), flush(y)) } else { (x, y) };
+            let equal = seen_x == seen_y || (flushes && subnormal(seen_x - seen_y));
+            for (relation, &bit) in relations.iter().zip(got) {
+                let want = match relation {
+                    Relation::Equal => equal,
+                    Relation::AtLeast | Relation::AtMost => equal || relation.holds(seen_x, seen_y),
+                    Relation::Greater | Relation::Less => !equal && relation.holds(seen_x, seen_y),
+                };
+                assert_eq!(bit == 1.0, want, "{x:e} {} {y:e}, end_with_boolean {end_with_boolean}", relation.symbol());
+            }
+            if (got[4] == 1.0) != (x == y) {
+                flushed_pairs += 1;
+            }
+        }
+    }
+    // A flushing GPU calls some unequal pairs equal, such as 0 and 2^-149.
+    assert_eq!(flushed_pairs > 0, flushes);
+}

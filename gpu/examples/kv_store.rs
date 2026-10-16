@@ -67,6 +67,7 @@ fn kv_step(
 }
 
 type State = ([u16; SLOTS], [u16; SLOTS]);
+type Operation = ([u16; SLOTS], [u16; SLOTS], u8, u16, u16);
 
 struct Rng(u64);
 impl Rng {
@@ -116,7 +117,7 @@ fn main() {
 
     // 100,000 independent operations on 100,000 different stores, in one GPU dispatch.
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-    let records: Vec<([u16; SLOTS], [u16; SLOTS], u8, u16, u16)> = (0..100_000)
+    let records: Vec<Operation> = (0..100_000)
         .map(|_| {
             let keys: [u16; SLOTS] = std::array::from_fn(|_| rng.below(16) as u16);
             let values: [u16; SLOTS] = std::array::from_fn(|_| rng.below(65_536) as u16);

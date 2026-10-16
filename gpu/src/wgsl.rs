@@ -16,10 +16,11 @@
 //! - It folds constant expressions in 64 bits, so every literal is one f32 with
 //!   exact bits, and no expression combines two literals.
 //!
-//! Not guarded: a GPU may flush subnormal values to zero, which changes a
-//! sign-cascade comparison of values closer than 2^-126, and WGSL lets an
-//! implementation assume no NaN or infinity occurs. Results match the CPU
-//! reference where neither happens, up to the sign of zero.
+//! Not guarded: a GPU may flush subnormal values to zero (RADV and lavapipe
+//! do), which reads a subnormal operand as 0 and makes values closer than
+//! 2^-126 compare equal, and WGSL lets an implementation assume no NaN or
+//! infinity occurs. Results match the CPU reference where neither happens, up
+//! to the sign of zero.
 
 use std::fmt::Write;
 

@@ -1,6 +1,14 @@
 //! `#[handwired]` on arrays, loops, `match`, casts and wrapping arithmetic.
 //! Every circuit is verified against the function it came from.
 
+// The functions are written the way people write them, to exercise the macro, not the way clippy prefers.
+#![allow(
+    clippy::needless_return,
+    clippy::needless_range_loop,
+    clippy::needless_late_init,
+    clippy::manual_range_patterns
+)]
+
 use handwired_rs::handwired;
 
 fn verified<Args, R>(compiled: handwired_rs::dsl::Compiled<Args, R>) -> handwired_rs::dsl::Report
