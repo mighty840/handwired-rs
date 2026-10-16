@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `verify`, `verify_seeded` and `verify_with` check their samples on every core: one `verify(20,000)` of a
+  1,053-operation circuit in a debug build goes from 2.6 s to 0.54 s. Inputs are still drawn in order from the seed,
+  and the first failure in sample order is reported. They now need `Args: Sync`, so generic callers add that bound.
 - `Compiled::broadcast(&mut encoded, arg, &value)`: one argument, e.g. a tuning step's parameters, written into every
   encoded record and range-checked once; `Params::arg_cells(index)` gives an argument's cells.
 - `ComparisonGradient::RelativeSurrogate { fraction }`: each comparison's width is `fraction` × the span of its

@@ -13,7 +13,7 @@ use handwired_rs::handwired;
 
 fn check<Args, R>(compiled: handwired_rs::dsl::Compiled<Args, R>)
 where
-    Args: handwired_rs::dsl::Params + Clone + std::fmt::Debug,
+    Args: handwired_rs::dsl::Params + Clone + std::fmt::Debug + Sync,
     R: handwired_rs::dsl::HwType + PartialEq + std::fmt::Debug,
 {
     let report = compiled.verify(20_000).unwrap();

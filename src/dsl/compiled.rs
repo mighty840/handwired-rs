@@ -667,11 +667,17 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
     /// the function panics are skipped. Run it in a build with overflow
     /// checks, e.g. a debug build, so that overflow panics as the contract
     /// assumes instead of wrapping.
-    pub fn verify(&self, cases: usize) -> Result<Report, VerifyError> {
+    pub fn verify(&self, cases: usize) -> Result<Report, VerifyError>
+    where
+        Args: Sync,
+    {
         self.verify_seeded(cases, 0x5EED)
     }
 
-    pub fn verify_seeded(&self, cases: usize, seed: u64) -> Result<Report, VerifyError> {
+    pub fn verify_seeded(&self, cases: usize, seed: u64) -> Result<Report, VerifyError>
+    where
+        Args: Sync,
+    {
         self.verify_with(cases, seed, |rng| Args::sample(rng, self.attrs))
     }
 
@@ -682,7 +688,10 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
         cases: usize,
         seed: u64,
         mut sample: impl FnMut(&mut Rng) -> Args,
-    ) -> Result<Report, VerifyError> {
+    ) -> Result<Report, VerifyError>
+    where
+        Args: Sync,
+    {
         if !cfg!(debug_assertions) {
             eprintln!(
                 "warning: verify in a build without overflow checks: integer overflow wraps in the function instead \
@@ -690,11 +699,32 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
             );
         }
         install_quiet_hook();
+        // Every input is drawn first, in order, so a seed gives the same inputs; then they're checked on every
+        // core, and the first failure in sample order is the one reported.
         let mut rng = Rng::new(seed);
+        let inputs: Vec<Args> = (0..cases).map(|_| sample(&mut rng)).collect();
+        let chunk = inputs.len().div_ceil(threads_for(inputs.len())).max(1);
+        let outcomes: Vec<Result<Report, VerifyError>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = inputs
+                .chunks(chunk)
+                .map(|chunk_inputs| scope.spawn(move || self.verify_inputs(chunk_inputs)))
+                .collect();
+            handles.into_iter().map(|handle| handle.join().expect("a verify thread panicked")).collect()
+        });
+        let mut report = Report { checked: 0, skipped: 0 };
+        for outcome in outcomes {
+            let part = outcome?;
+            report.checked += part.checked;
+            report.skipped += part.skipped;
+        }
+        Ok(report)
+    }
+
+    /// One thread's share of [`verify_with`](Self::verify_with), stopping at its first failure.
+    fn verify_inputs(&self, inputs: &[Args]) -> Result<Report, VerifyError> {
         let mut executor = TensorExecutor::new(&self.program);
         let mut report = Report { checked: 0, skipped: 0 };
-        for _ in 0..cases {
-            let args = sample(&mut rng);
+        for args in inputs {
             QUIET_PANICS.with(|quiet| quiet.set(true));
             let expected = panic::catch_unwind(AssertUnwindSafe(|| (self.oracle)(args.clone())));
             QUIET_PANICS.with(|quiet| quiet.set(false));
@@ -702,7 +732,7 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
                 report.skipped += 1;
                 continue;
             };
-            let source = self.source(&args);
+            let source = self.source(args);
             self.circuit
                 .validate_source_ranges(&source)
                 .map_err(|error| VerifyError::OutOfRange { inputs: format!("{args:?}"), error })?;
