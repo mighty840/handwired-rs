@@ -36,6 +36,10 @@ jobs:
           cargo run --release --example ui_panel > /dev/null
           cargo run --release --example life > /dev/null
           cargo run --release --example fizzbuzz > /dev/null
+      - name: Run the game balancing example
+        run: cargo run --release --example balance
+      - name: Run SHA-1 against sha1_smol
+        run: cargo run --release --example sha1
 
   lint:
     name: Format and clippy

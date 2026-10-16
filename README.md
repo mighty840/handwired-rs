@@ -143,6 +143,31 @@ The circuit form doesn't make a program like this faster than native Rust; what 
 program is a stack of sparse matrix multiplications with ReLUs, which runs on tensor hardware and is differentiable.
 Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests skip when there is none.
 
+## Two larger examples
+
+**SHA-1, ported from a library and checked against it.** `cargo run --release --example sha1` ports `sha1_smol`'s
+block function (`Sha1State::process` and the intrinsic emulations it calls, function for function, under its BSD
+license) to `#[handwired]`. Values are exact only within ±2^24, so a 32-bit word is 32 bits: XOR/AND/OR/NOT are per
+bit, rotations only rename bits, and `wrapping_add` adds byte by byte with carries. The circuit has 99,698 operations in
+4,011 layers. It gives the standard test vectors' digests, and the digests of 2,000 random messages of 0–300 bytes
+(6,061 blocks) match `sha1_smol`'s exactly, roughly 1,000x slower than `sha1_smol` itself on the batch executor.
+
+**Balancing a game through its rules.** `cargo run --release --example balance` writes a dice skirmish between two
+units as one `#[handwired]` function (290 operations) and tunes three units' damage and health until every matchup of
+Knight, Archer and Mage is 50/50. Each step counts the win rates exactly with the circuit and takes the direction from
+the circuit's backward pass (the gradient of each fight's margin with respect to both units' stats), in a few
+Gauss-Newton steps:
+
+| | Knight beats Archer | Archer beats Mage | Mage beats Knight |
+| --- | --- | --- | --- |
+| before (6 dmg / 60 hp, 4 / 45, 9 / 36) | 97.8% | 28.6% | 22.4% |
+| after 7 steps (6.57 / 39.6, 8.24 / 33.0, 7.35 / 56.5) | 50.3% | 49.5% | 50.8% |
+
+The rates are counted on 20,000 fights per matchup that the tuning never saw. Gradients only help where the outcome
+moves smoothly with the stats: in a first version, where units died mid-fight, most Archer–Mage fights ended with both
+dead, a margin of exactly 0 with no gradient, and the tuning stalled at 58%. Win rates also move in steps of a few
+points, since fights with the same hits change winner together, so about ±1% is as close as it gets.
+
 ## What's ported
 
 | Area | Status |
@@ -247,6 +272,6 @@ toggle and a slider (pointer handling, arming, dragging with clamping and snappi
 operations) through a scripted pointer, and `cargo run --release --example life` runs Conway's Game of Life on a
 24 × 24 torus (6,912 operations in 8 layers); both check every frame against their function and print the frames.
 
-CI (`.github/workflows/ci.yml`) runs all of the above on GitHub's Ubuntu runners, with the GPU tests on Mesa's lavapipe
-software Vulkan (it fails rather than skips if no adapter appears), runs the search example, and checks `cargo fmt`,
-`clippy -D warnings` on the libraries, and packaging of the macro crate.
+CI (`.github/workflows/ci.yml`) runs all of the above on GitHub's Ubuntu runners, in debug and release builds, with the
+GPU tests on Mesa's lavapipe software Vulkan (it fails rather than skips if no adapter appears), runs every example,
+and checks `cargo fmt`, `clippy -D warnings` on all targets, and packaging of the macro crate.
