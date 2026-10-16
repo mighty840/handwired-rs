@@ -225,7 +225,7 @@ points, since fights with the same hits change winner together, so about ±1% is
 | `emit_argmax`, `emit_first_active` (selection trees that declare their one-hot groups) | ✅ costs match handwired's docs |
 | Prefix networks (`sklansky_prefix`, `brent_kung_prefix`), and `dsl::running_sums` for `#[handwired]` | ✅ running-totals cost matches handwired's docs |
 | `inline_circuit` (one circuit into another, sharing matching expressions) | ✅ |
-| Springs / host timing | ⏳ not yet |
+| Springs (`emit_spring`, `emit_apply_spring_matrix`, `emit_animated_object`) and host timing (`timing`) | ✅ costs and planner logs match handwired's tests |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
 | GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
 
@@ -285,9 +285,9 @@ silent zero (`BackpropOptions` picks straight-through or zero). A value read at 
 `params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. There's no export to a deep
 learning framework.
 
-**Not ported from handwired.** Springs and frame timing,
-index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON
-search).
+**Not ported from handwired.** Index-read tables stored as a base and a stride, source-table cell declarations beyond
+the simplified ones, and its demos (HandwiredOS, the learned gallery, JSON search). The springs' end-to-end
+frame-trace tests (whole animations along 10–120 fps traces) aren't ported; their parts are.
 
 ## License
 
@@ -318,6 +318,11 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   order, declarations on read wires, exact bits, one-hot groups), and random circuits inlined into a larger one with
   every value kept. A plain `affine`'s terms are summed in wire order, so inlining through permuted cells can change
   its last bit; `round_affine` keeps its order.
+- `tests/springs.rs`: springs and host timing, ported from handwired's spring-matrix tests: a spring matrix against
+  float64 Euler steps and an FP32 twin, its cost (14 operations in 3 layers), animated objects' costs and an
+  independent FP32 twin bit for bit (settle thresholds, exact rest, subnormals, snaps), rebasing, refusals, inlining,
+  gradients, frame timing, step counts, matrix powers and bounds, and `advance_frame`'s exact plans (settle checks,
+  snaps past the cap, late events, write-back policies, frame-rate independence), plus `emit_spring` settling.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested

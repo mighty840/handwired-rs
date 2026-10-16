@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.3.0)
 
+- Springs and host timing, ported from handwired: `emit_spring`, `emit_apply_spring_matrix` and
+  `emit_animated_object` (springs stepped by a host-written matrix and settled together with one exact bit), and the
+  `timing` module (`quantize_frame_timing`, `count_spring_steps`, spring matrices and bounds, `advance_frame`). Costs
+  and planner logs match handwired's tests.
 - `Circuit::inline_circuit`, ported from handwired: rebuilds one circuit's operations in another, through the
   builder, so matching expressions are shared; declarations, rounding points, comparison bits and one-hot groups
   carry over.

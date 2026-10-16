@@ -38,7 +38,9 @@ mod gather;
 mod inline;
 mod numeric;
 mod prefix;
+mod springs;
 mod tensor;
+pub mod timing;
 mod wire;
 
 pub use batch::{BatchExecutor, LANES};
@@ -55,6 +57,10 @@ pub use emit::{
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;
 pub use prefix::{brent_kung_prefix, sklansky_prefix};
+pub use springs::{
+    AnimatedObject, AnimatedObjectOptions, AnimatedSpring, SpringMatrixWires, SpringState, emit_animated_object,
+    emit_apply_spring_matrix, emit_spring,
+};
 pub use tensor::{CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
 pub use wire::{Lin, Term, Wire};
 
