@@ -372,3 +372,17 @@ fn gathers_match_the_reference() {
     }
     assert!(total_reads >= 50, "only {total_reads} gather reads");
 }
+
+#[handwired]
+fn bounded(#[range(0, 100)] a: u8) -> u8 {
+    a / 2
+}
+
+#[test]
+fn batches_check_declared_ranges() {
+    let Some(gpu) = gpu() else { return };
+    let batch = GpuBatch::new(&gpu, &bounded_circuit()).unwrap();
+    assert_eq!(batch.run(&gpu, &[(0,), (99,), (100,)]).unwrap(), vec![0, 49, 50]);
+    let error = batch.run(&gpu, &[(5,), (101,)]).unwrap_err();
+    assert!(error.to_string().contains("record 1: source cell 0 is 101"), "{error}");
+}

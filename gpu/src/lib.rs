@@ -20,7 +20,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use handwired_rs::dsl::{Compiled, HwType, Params};
-use handwired_rs::{Circuit, TensorProgram, Wire};
+use handwired_rs::{Circuit, Range, TensorProgram, Wire};
 use wgpu::util::DeviceExt;
 
 #[derive(Debug)]
@@ -257,26 +257,39 @@ impl GpuProgram {
 /// A `#[handwired]` function's circuit on the GPU, run on typed arguments.
 pub struct GpuBatch<Args, R> {
     pub program: GpuProgram,
+    /// The declared range of each source cell.
+    source_ranges: Vec<Range>,
     marker: PhantomData<fn(Args) -> R>,
 }
 
 impl<Args: Params, R: HwType> GpuBatch<Args, R> {
     pub fn new(gpu: &Gpu, compiled: &Compiled<Args, R>) -> Result<GpuBatch<Args, R>, GpuError> {
         let program = GpuProgram::from_program(gpu, &compiled.program)?;
-        Ok(GpuBatch { program, marker: PhantomData })
+        let circuit = &compiled.circuit;
+        let source_ranges = (0..circuit.source_size()).map(|cell| circuit.range(circuit.source(cell))).collect();
+        Ok(GpuBatch { program, source_ranges, marker: PhantomData })
     }
 
     /// The source tables for `records`, checked against the declared ranges.
-    pub fn encode(&self, records: &[Args]) -> Vec<f32> {
+    pub fn encode(&self, records: &[Args]) -> Result<Vec<f32>, GpuError> {
         let mut sources = Vec::with_capacity(records.len() * Args::CELLS);
-        for record in records {
+        for (record_index, record) in records.iter().enumerate() {
             record.encode(&mut sources);
+            let start = record_index * Args::CELLS;
+            for (cell, (&value, range)) in sources[start..].iter().zip(&self.source_ranges).enumerate() {
+                if !(value as f64 >= range.min && value as f64 <= range.max) {
+                    return Err(GpuError::Input(format!(
+                        "record {record_index}: source cell {cell} is {value}, outside its declared range {}..{}",
+                        range.min, range.max
+                    )));
+                }
+            }
         }
-        sources
+        Ok(sources)
     }
 
     pub fn run(&self, gpu: &Gpu, records: &[Args]) -> Result<Vec<R>, GpuError> {
-        let outputs = self.program.run(gpu, &self.encode(records))?;
+        let outputs = self.program.run(gpu, &self.encode(records)?)?;
         Ok(outputs
             .chunks(self.program.output_count.max(1))
             .take(records.len())
