@@ -17,7 +17,7 @@ use crate::wire::{Lin, Wire};
 const EXACT_LIMIT: f64 = 16_777_216.0;
 
 /// An integer result, checked to stay exact when its type is wider than 2^24.
-fn number<T: Scalar>(circuit: &mut Circuit, wire: Wire, at: &Location) -> Val<T> {
+pub(super) fn number<T: Scalar>(circuit: &mut Circuit, wire: Wire, at: &Location) -> Val<T> {
     if is_wide::<T>() {
         let range = circuit.range(wire);
         if !(range.min > -EXACT_LIMIT && range.max < EXACT_LIMIT) {
@@ -435,7 +435,7 @@ pub trait Logic<Right> {
     fn or(self, right: impl FnOnce() -> Right) -> Self::Output;
 }
 
-fn and_bits(left: Val<bool>, right: Val<bool>) -> Val<bool> {
+pub(super) fn and_bits(left: Val<bool>, right: Val<bool>) -> Val<bool> {
     match (known_bit(left), known_bit(right)) {
         (Some(false), _) | (_, Some(false)) => return Val::constant(false),
         (Some(true), _) => return right,

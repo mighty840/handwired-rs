@@ -699,7 +699,12 @@ impl Rewriter {
             BinOp::BitOrAssign(_) => Some(quote!(|)),
             BinOp::BitXorAssign(_) => Some(quote!(^)),
             BinOp::ShlAssign(_) | BinOp::ShrAssign(_) => {
-                return self.error(span, "shifts aren't supported in #[handwired] functions yet");
+                // x <<= y becomes x = shl(x, y), since Rust can't overload a shift's amount type here.
+                let function = Ident::new(if matches!(binary.op, BinOp::ShlAssign(_)) { "shl" } else { "shr" }, span);
+                let current = self.expr(&binary.left, true, None);
+                let right = self.expr(&binary.right, true, None);
+                let shifted = quote_spanned!(span=> ::handwired_rs::dsl::#function(#current, #right));
+                return self.assign(&binary.left, shifted);
             }
             _ => None,
         };
@@ -725,7 +730,13 @@ impl Rewriter {
             BinOp::Ne(_) => call("ne"),
             BinOp::And(_) => quote_spanned!(span=> ::handwired_rs::dsl::and(#left, || #right)),
             BinOp::Or(_) => quote_spanned!(span=> ::handwired_rs::dsl::or(#left, || #right)),
-            BinOp::Shl(_) | BinOp::Shr(_) => self.error(span, "shifts aren't supported in #[handwired] functions yet"),
+            // Two literals stay a native shift, so the literal's type comes from the context, e.g. `b |= 1 << 9`.
+            BinOp::Shl(_) | BinOp::Shr(_) if is_literal(&binary.left) && is_literal(&binary.right) => {
+                let op = binary.op;
+                quote_spanned!(span=> #left #op #right)
+            }
+            BinOp::Shl(_) => call("shl"),
+            BinOp::Shr(_) => call("shr"),
             op => quote_spanned!(span=> #left #op #right),
         }
     }
@@ -1008,6 +1019,16 @@ fn pattern_condition(pattern: &Pat, subject: &Expr, bindings: &mut Vec<Stmt>) ->
         }
         other => return Err(syn::Error::new(other.span(), "this pattern isn't supported in #[handwired] functions")),
     })
+}
+
+/// Whether an expression is an integer literal, possibly negated or parenthesized.
+fn is_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(_) => true,
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => is_literal(&unary.expr),
+        Expr::Paren(inner) => is_literal(&inner.expr),
+        _ => false,
+    }
 }
 
 /// Whether a place reads through an index, e.g. `units[i].hp`.

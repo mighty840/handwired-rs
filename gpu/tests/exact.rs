@@ -476,3 +476,40 @@ fn struct_batches_match_the_function() {
         assert_eq!(result, vote(record.0, record.1), "{record:?}");
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, handwired_rs::dsl::HwType)]
+enum Mode {
+    Mix,
+    Mask,
+    Shift,
+}
+
+/// Integer bitwise operators, shifts by circuit amounts and an enum `match`: xorshift on u16 (bits kept as their own
+/// sums) and an 8-bit mix (bits copied into readers).
+#[handwired]
+fn scramble(state: u16, byte: u8, #[range(0, 7)] amount: u8, mode: Mode) -> (u16, u8) {
+    let mut x = state;
+    x ^= x << 7;
+    x ^= x >> 9;
+    x ^= x << 8;
+    let mixed = match mode {
+        Mode::Mix => (byte ^ (byte << amount)) | 1,
+        Mode::Mask => byte & !(0x0Fu8 << (amount & 3)),
+        Mode::Shift => byte >> amount,
+    };
+    (x, mixed)
+}
+
+#[test]
+fn bitwise_and_enum_batches_match_the_function() {
+    let Some(gpu) = gpu() else { return };
+    let batch = GpuBatch::new(&gpu, &scramble_circuit()).unwrap();
+    let mut rng = Rng(9);
+    let modes = [Mode::Mix, Mode::Mask, Mode::Shift];
+    let records: Vec<(u16, u8, u8, Mode)> = (0..65_536u32)
+        .map(|state| (state as u16, rng.below(256) as u8, rng.below(8) as u8, rng.pick(&modes)))
+        .collect();
+    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+        assert_eq!(result, scramble(record.0, record.1, record.2, record.3), "{record:?}");
+    }
+}

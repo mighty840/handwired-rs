@@ -76,6 +76,8 @@ inputs where the oracle panics; run it with overflow checks on (e.g. a debug bui
 **Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12) and `#[derive(HwType)]`
 structs as parameters (up to 16), results and locals;
 `+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant (as a table read); f32 `/` by a power of two;
+integer `& | ^ !`, `<<` and `>>` by a constant or an input value (wrapping like Rust) and `count_ones()`, see
+[Bitwise operators](#bitwise-operators);
 `min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
 like Rust); `if`/`else` as a statement or value; `match` with literals, ranges, `|`, guards, tuples, bindings and
 consts; `for` over ranges or arrays that don't depend on the inputs (they unroll); array reads and writes at computed
@@ -179,6 +181,32 @@ pub fn turn_step(turn: Turn, #[range(1, 6)] roll: u8, hold: bool) -> Turn {
 ```
 
 Variants with data (`Option<T>`, `Move(u8)`) aren't supported yet.
+
+### Bitwise operators
+
+Integer `&`, `|`, `^`, `!`, `<<`, `>>` (and their `op=` forms) and `count_ones()` work on values within ±2^24. A value
+is split into its bits once, in two's complement: one step of two ReLUs per bit, one layer per bit up to 11 bits and
+two above, where each bit is kept as its own sum so f32 adds exactly. `a & b` is then one ReLU per bit, and `a ^ b = a + b - 2 (a & b)` and `a | b = a + b - (a & b)` are sums on top
+of it. A u8 XOR is 40 operations in 10 layers. `!x` is a sum. `>>` by a constant keeps the high bits (Rust's
+arithmetic shift), `<<` by a constant is a multiplication where the result fits the type and wraps through the bits
+where it may not, and a shift by an input value reads the result for every possible amount. A value's range sets its
+bit count, so `#[range(0, 511)] board: u16` splits into 9 bits.
+
+```rust
+#[handwired]
+fn xorshift16(state: u16) -> u16 {
+    let mut x = state;
+    x ^= x << 7;
+    x ^= x >> 9;
+    x ^= x << 8;
+    x
+}
+```
+
+The tests run every u8 and i8 pair, every xorshift16 state and every value of 11- and 12-bit operands through the
+circuits. Values must stay within ±2^24, so 32- and 64-bit hashes and bitboards wider than 24 bits (Connect Four's 49)
+don't fit; the SHA-1 example keeps its words as `[bool; 32]`. A literal shifted by an input value needs a suffix,
+e.g. `0x0Fu8 << amount`.
 
 See [Limitations](#limitations) for what isn't supported.
 
@@ -305,7 +333,7 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **The `#[handwired]` subset.**
 - Not supported: `while`/`loop` (every loop needs bounds that don't depend on the inputs), labeled `break`/`continue`,
-  division or remainder by an input value, shifts and integer bitwise operators, enums whose variants carry data,
+  division or remainder by an input value, integers beyond ±2^24 in bitwise operators, enums whose variants carry data,
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s, and every value must stay within
   ±2^24, the integers f32 holds exactly. `f32` parameters need `#[range]`s.

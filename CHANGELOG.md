@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Integer bitwise operators in `#[handwired]` functions: `&`, `|`, `^`, `!`, `<<`, `>>`, their `op=` forms and
+  `count_ones()`, on values within ±2^24. A value is split into two's-complement bits, one layer per bit; AND is one
+  ReLU per bit, and OR and XOR are sums over it. Shifts by a constant move bits (`<<` wraps like Rust only where the
+  result may leave the type), shifts by an input value read the result for each amount. A u8 XOR is 40 operations in
+  10 layers. `dsl::shl`, `dsl::shr` and `dsl::Shift` are what the macro calls.
 - `#[derive(HwType)]` on enums whose variants carry no data (handwired-rs-macros): the enum is a scalar, its
   discriminant in one cell, declared as the discriminants' range and sampled only as real variants. `match` on it,
   `==`/`!=`, ordering with a derived `PartialOrd`, `as` casts to integers, enum fields, arrays of enums at computed

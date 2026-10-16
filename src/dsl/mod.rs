@@ -9,11 +9,13 @@
 //! native Rust values, so `for` loops unroll and constants fold.
 //!
 //! The macro rewrites only what Rust can't overload: comparisons, `&&`/`||`,
-//! indexing, assignments, `if`/`match` and casts, into calls of this module.
+//! shifts, indexing, assignments, `if`/`match` and casts, into calls of this
+//! module.
 //!
 //! The contract: the circuit agrees with the function on every input for
 //! which the function returns without panicking.
 
+mod bits;
 mod compiled;
 mod control;
 mod ops;
@@ -25,6 +27,7 @@ use std::marker::PhantomData;
 use crate::circuit::Circuit;
 use crate::wire::Wire;
 
+pub use bits::{Shift, shl, shr};
 pub use compiled::{
     Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_scalar, sample_variant,
 };
