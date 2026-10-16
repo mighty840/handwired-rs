@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `ComparisonGradient::RelativeSurrogate { fraction }`: each comparison's width is `fraction` × the span of its
+  difference's declared range, so dice and hit-point thresholds in one circuit each get a fitting width.
+- `run_batch` encodes and range-checks records in parallel (about 1.8x faster end to end on 262,144 records), and
+  `Compiled::encode_records` / `run_encoded` / `gradients_encoded` reuse encoded records across steps. `run_batch`
+  now needs `Args: Sync` and `R: Send`.
 - `ComparisonGradient::Surrogate { width }` in `BackpropOptions`: comparison bits get the gradient of
   `sigmoid(d / width)` of their difference in the backward pass, straight to their operands, so thresholds, `if`s on
   inputs and `max`/`min`/`clamp` can be tuned; the forward values stay exact. Operations record their comparison

@@ -347,6 +347,33 @@ tuple_params!(
     (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11, A12 12, A13 13, A14 14, A15 15)
 );
 
+/// Records encoded into source tables and checked against the declared ranges, by
+/// [`Compiled::encode_records`], to run or differentiate many times without encoding them again.
+#[derive(Clone, Debug)]
+pub struct EncodedRecords {
+    sources: Vec<f32>,
+    count: usize,
+}
+
+impl EncodedRecords {
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The source tables, one after another.
+    pub fn sources(&self) -> &[f32] {
+        &self.sources
+    }
+}
+
+fn threads_for(records: usize) -> usize {
+    std::thread::available_parallelism().map_or(1, |count| count.get()).min(records.max(1))
+}
+
 /// A `#[handwired]` function's circuit, compiled for its outputs, with the
 /// original function kept as the oracle.
 pub struct Compiled<Args, R> {
@@ -444,19 +471,73 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
     }
 
     /// Run the compiled program on many records at once, vectorized across records and split across all cores.
-    pub fn run_batch(&self, records: &[Args]) -> Result<Vec<R>, Error> {
-        let mut sources = Vec::with_capacity(records.len() * Args::CELLS);
-        for record in records {
-            let start = sources.len();
-            record.encode(&mut sources);
-            self.circuit.validate_source_ranges(&sources[start..])?;
-        }
-        let outputs = BatchExecutor::run_parallel(&self.program, &sources, None);
-        Ok(outputs
-            .chunks(self.outputs.len().max(1))
-            .take(records.len())
-            .map(|record| R::decode(&mut record.iter().copied()))
-            .collect())
+    /// To run or differentiate the same records again, encode them once with
+    /// [`encode_records`](Self::encode_records) and use [`run_encoded`](Self::run_encoded).
+    pub fn run_batch(&self, records: &[Args]) -> Result<Vec<R>, Error>
+    where
+        Args: Sync,
+        R: Send,
+    {
+        Ok(self.run_encoded(&self.encode_records(records)?))
+    }
+
+    /// Encode `records` into source tables and check them against the declared ranges, on every core.
+    pub fn encode_records(&self, records: &[Args]) -> Result<EncodedRecords, Error>
+    where
+        Args: Sync,
+    {
+        let cells = Args::CELLS;
+        let mut sources = vec![0f32; records.len() * cells];
+        let chunk = records.len().div_ceil(threads_for(records.len())).max(1);
+        let results: Vec<Result<(), Error>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = records
+                .chunks(chunk)
+                .zip(sources.chunks_mut(chunk * cells.max(1)))
+                .map(|(chunk_records, chunk_sources)| {
+                    scope.spawn(move || {
+                        let mut scratch = Vec::with_capacity(cells);
+                        for (record, slot) in chunk_records.iter().zip(chunk_sources.chunks_mut(cells.max(1))) {
+                            scratch.clear();
+                            record.encode(&mut scratch);
+                            self.circuit.validate_source_ranges(&scratch)?;
+                            slot[..cells].copy_from_slice(&scratch);
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|handle| handle.join().expect("an encoding thread panicked")).collect()
+        });
+        results.into_iter().collect::<Result<(), Error>>()?;
+        Ok(EncodedRecords { sources, count: records.len() })
+    }
+
+    /// Run the compiled program on records encoded by [`encode_records`](Self::encode_records).
+    pub fn run_encoded(&self, records: &EncodedRecords) -> Vec<R>
+    where
+        R: Send,
+    {
+        let outputs = BatchExecutor::run_parallel(&self.program, &records.sources, None);
+        let width = self.outputs.len().max(1);
+        let chunk = records.count.div_ceil(threads_for(records.count)).max(1);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = outputs
+                .chunks(chunk * width)
+                .map(|chunk_outputs| {
+                    scope.spawn(move || {
+                        chunk_outputs
+                            .chunks(width)
+                            .map(|record| R::decode(&mut record.iter().copied()))
+                            .collect::<Vec<R>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("a decoding thread panicked"))
+                .take(records.count)
+                .collect()
+        })
     }
 
     /// The gradient of output `output` (an index into the flattened outputs, e.g. 0 for a single `f32` result) with
@@ -473,30 +554,43 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
     where
         Args: Sync,
     {
+        self.gradients_encoded(&self.encode_records(records)?, output, weights, options)
+    }
+
+    /// [`gradients`](Self::gradients) of records encoded by [`encode_records`](Self::encode_records), e.g. the
+    /// same training records at every tuning step.
+    pub fn gradients_encoded(
+        &self,
+        records: &EncodedRecords,
+        output: usize,
+        weights: Option<&[f32]>,
+        options: BackpropOptions,
+    ) -> Result<Vec<f64>, Error> {
         assert!(output < self.outputs.len(), "output {output} is out of range: there are {}", self.outputs.len());
         if let Some(weights) = weights {
-            assert_eq!(weights.len(), records.len(), "one weight per record");
+            assert_eq!(weights.len(), records.count, "one weight per record");
         }
+        let cells = Args::CELLS;
         let output_wire = self.outputs[output];
-        let threads = std::thread::available_parallelism().map_or(1, |count| count.get()).min(records.len().max(1));
-        let chunk = records.len().div_ceil(threads).max(1);
+        let chunk = records.count.div_ceil(threads_for(records.count)).max(1);
         let partials: Vec<Result<Vec<f64>, Error>> = std::thread::scope(|scope| {
             let handles: Vec<_> = records
-                .chunks(chunk)
+                .sources
+                .chunks(chunk * cells.max(1))
                 .enumerate()
-                .map(|(chunk_index, chunk_records)| {
+                .map(|(chunk_index, chunk_sources)| {
                     scope.spawn(move || {
-                        let mut sums = vec![0f64; Args::CELLS];
+                        let mut sums = vec![0f64; cells];
                         let mut seed = vec![0f32; self.circuit.width()];
-                        for (offset, record) in chunk_records.iter().enumerate() {
+                        for (offset, source) in chunk_sources.chunks(cells.max(1)).enumerate() {
                             let weight = weights.map_or(1.0, |weights| weights[chunk_index * chunk + offset]);
                             if weight == 0.0 {
                                 continue;
                             }
-                            let values = self.circuit.evaluate_reference(&self.source(record))?;
+                            let values = self.circuit.evaluate_unchecked(&source[..cells]);
                             seed[output_wire.index()] = weight;
                             let gradients = self.circuit.backpropagate_reference(&values, &seed, options)?;
-                            for (sum, &gradient) in sums.iter_mut().zip(&gradients[..Args::CELLS]) {
+                            for (sum, &gradient) in sums.iter_mut().zip(&gradients[..cells]) {
                                 *sum += gradient as f64;
                             }
                         }
@@ -506,7 +600,7 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
                 .collect();
             handles.into_iter().map(|handle| handle.join().expect("a gradient thread panicked")).collect()
         });
-        let mut total = vec![0f64; Args::CELLS];
+        let mut total = vec![0f64; cells];
         for partial in partials {
             for (sum, value) in total.iter_mut().zip(partial?) {
                 *sum += value;

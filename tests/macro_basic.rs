@@ -170,3 +170,32 @@ fn ranges_declare_one_range_per_scalar() {
     });
     assert_eq!(report.unwrap().checked, 500);
 }
+
+#[test]
+fn encoded_records_run_and_differentiate_like_the_records() {
+    use handwired_rs::BackpropOptions;
+    let compiled = expected_hits_circuit();
+    let records: Vec<([f32; 3], [f32; 3])> = (0..5_000)
+        .map(|n| {
+            let stats = [2.0 + (n % 18) as f32, 1.0 + (n % 199) as f32, 2.0 + (n % 5) as f32];
+            (stats, stats)
+        })
+        .collect();
+    let encoded = compiled.encode_records(&records).unwrap();
+    assert_eq!((encoded.len(), encoded.sources().len()), (records.len(), records.len() * 6));
+    let direct = compiled.run_batch(&records).unwrap();
+    assert_eq!(compiled.run_encoded(&encoded), direct);
+    for (record, result) in records.iter().zip(&direct) {
+        assert_eq!(*result, expected_hits(record.0, record.1));
+    }
+    let weights: Vec<f32> = (0..records.len()).map(|n| [1.0, -0.5, 0.25][n % 3]).collect();
+    let options = BackpropOptions::default();
+    assert_eq!(
+        compiled.gradients_encoded(&encoded, 0, Some(&weights), options).unwrap(),
+        compiled.gradients(&records, 0, Some(&weights), options).unwrap()
+    );
+    // One record out of range fails the whole encoding.
+    let mut bad = records.clone();
+    bad[4_321].0[1] = 500.0;
+    assert!(matches!(compiled.encode_records(&bad), Err(handwired_rs::Error::SourceOutOfRange { .. })));
+}

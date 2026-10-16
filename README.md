@@ -171,7 +171,9 @@ laptop (Ryzen with 12 threads, integrated Radeon Renoir):
 
 `BatchExecutor` keeps each value as a block of 64 records, so every row is a loop the compiler vectorizes (with AVX2
 when the CPU has it, picked at run time), and every lane repeats the one-record arithmetic in the same order: the
-results are bit for bit those of `TensorExecutor`. `Compiled::run_batch` runs it on typed records across all cores.
+results are bit for bit those of `TensorExecutor`. `Compiled::run_batch` runs it on typed records across all cores,
+encoding and range-checking them in parallel too; `encode_records` once and `run_encoded` / `gradients_encoded` many
+times reuses records across tuning steps.
 
 `cargo run --release -p handwired-rs-gpu --example kv_store` is a fixed-capacity key-value store (16 slots, get, put,
 delete) written as one `#[handwired]` function from the store's state to its next state and the answer. A `get` is hard
@@ -283,12 +285,15 @@ lets drivers assume there are no NaNs or infinities. There's no backward pass on
 example tunes a game with it. Comparisons, boolean atoms and index reads are step functions: their inputs get no
 useful gradient, and by default a nonzero gradient reaching a boolean atom or an index is an error rather than a
 silent zero (`BackpropOptions` picks straight-through or zero). A value read at a computed index, e.g.
-`params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. `BackpropOptions { comparison_gradient:
-ComparisonGradient::Surrogate { width }, .. }` gives comparisons (and so `if`s on inputs, `max`, `min`, `clamp`) a
-gradient anyway: the backward pass treats each comparison bit as `sigmoid(d / width)` of its difference `d`, e.g.
-`a - b`, and sends that slope straight to the operands, while the forward values stay exact. It's what lets a
-threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gradient is zero everywhere. There's no export to a deep
-learning framework.
+`params[faction * 2 + stat]`, does get the gradient, on the entry the index selects.
+
+**Gradients through comparisons.** `BackpropOptions { comparison_gradient: ComparisonGradient::Surrogate { width },
+.. }` gives comparisons (and so `if`s on inputs, `max`, `min`, `clamp`) a gradient anyway: the backward pass treats
+each comparison bit as `sigmoid(d / width)` of its difference `d`, e.g. `a - b`, and sends that slope straight to the
+operands, while the forward values stay exact. `RelativeSurrogate { fraction }` sets each comparison's width to
+`fraction` × its own difference range instead, for circuits that mix scales, e.g. dice and hit points. It's what lets
+a threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gradient is zero everywhere. There's no
+export to a deep learning framework.
 
 **Not ported from handwired.** Index-read tables stored as a base and a stride, source-table cell declarations beyond
 the simplified ones, and its demos (HandwiredOS, the learned gallery, JSON search). The springs' end-to-end

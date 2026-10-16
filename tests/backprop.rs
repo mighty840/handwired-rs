@@ -230,3 +230,50 @@ fn a_threshold_tunes_only_with_surrogate_gradients() {
     let tuned = tune(surrogate);
     assert!(tuned > 3.0 && tuned <= 4.0, "{tuned}");
 }
+
+#[test]
+fn relative_surrogate_widths_follow_each_comparisons_own_range() {
+    use handwired_rs::{CompareOptions, ComparisonGradient, Relation, emit_compare_with};
+    // A dice comparison (a difference within -5..5) and a hit-point one (within -200..200) in one circuit.
+    let mut circuit = Circuit::new(4);
+    let (roll, needed, health, damage) = (circuit.source(0), circuit.source(1), circuit.source(2), circuit.source(3));
+    for (wire, high) in [(roll, 6.0), (needed, 6.0), (health, 200.0), (damage, 200.0)] {
+        circuit.assume_range(wire, if high == 6.0 { 1.0 } else { 0.0 }, high);
+    }
+    let hits = emit_compare_with(&mut circuit, roll, Relation::AtLeast, needed, CompareOptions::default());
+    let dies = emit_compare_with(&mut circuit, damage, Relation::AtLeast, health, CompareOptions::default());
+    let fraction = 0.1;
+    let relative = BackpropOptions {
+        comparison_gradient: ComparisonGradient::RelativeSurrogate { fraction },
+        ..Default::default()
+    };
+    let source = [4.0f32, 3.0, 50.0, 47.0];
+    let slope = |d: f64, width: f64| {
+        let s = 1.0 / (1.0 + (-d / width).exp());
+        s * (1.0 - s) / width
+    };
+    // Widths 0.1 × 10 = 1 for the dice and 0.1 × 400 = 40 for the hit points.
+    let dice = gradients_of(&circuit, &source, hits, relative).unwrap();
+    assert!(
+        (dice[0] as f64 - slope(1.0, 1.0)).abs() < 1e-6 && (dice[1] as f64 + slope(1.0, 1.0)).abs() < 1e-6,
+        "{dice:?}"
+    );
+    let health_gradients = gradients_of(&circuit, &source, dies, relative).unwrap();
+    assert!((health_gradients[3] as f64 - slope(-3.0, 40.0)).abs() < 1e-6, "{health_gradients:?}");
+    assert!((health_gradients[2] as f64 + slope(-3.0, 40.0)).abs() < 1e-6);
+    // The threshold tuning works with a relative width too.
+    let compiled = meets_circuit();
+    let mut threshold = 1.5f32;
+    for _ in 0..200 {
+        let records: Vec<(f32, f32)> = (1..=6).map(|roll| (threshold, roll as f32)).collect();
+        let rate = compiled.run_batch(&records).unwrap().iter().sum::<f32>() / 6.0;
+        let weights = vec![2.0 * (rate - 0.5) / 6.0; 6];
+        let options = BackpropOptions {
+            comparison_gradient: ComparisonGradient::RelativeSurrogate { fraction: 0.05 },
+            ..Default::default()
+        };
+        let gradient = compiled.gradients(&records, 0, Some(&weights), options).unwrap()[0];
+        threshold = (threshold as f64 - 2.0 * gradient).clamp(1.0, 7.0) as f32;
+    }
+    assert!(threshold > 3.0 && threshold <= 4.0, "{threshold}");
+}

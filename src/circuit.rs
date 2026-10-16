@@ -136,6 +136,10 @@ pub enum ComparisonGradient {
     /// e.g. `a - b` for `a > b`; an equality bit as `4 × sigmoid × (1 - sigmoid)`, which peaks at `d = 0`. The
     /// gradient goes straight to the operands; the forward values stay exact. `width` is in the operands' units.
     Surrogate { width: f64 },
+    /// [`Surrogate`](Self::Surrogate) with each comparison's width set to `fraction` × the span of its difference's
+    /// declared range, e.g. 0.1 × (max - min of `a - b`): scale-free, so dice and hit-point thresholds in one circuit
+    /// each get a width that fits them, with no annotations.
+    RelativeSurrogate { fraction: f64 },
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -770,10 +774,24 @@ impl Circuit {
             if output_gradient == 0.0 {
                 continue;
             }
-            if let (ComparisonGradient::Surrogate { width }, Some(comparison)) =
-                (options.comparison_gradient, &operation.comparison)
-            {
-                assert!(width > 0.0 && width.is_finite(), "a surrogate width must be positive and finite");
+            let surrogate_width = match (options.comparison_gradient, &operation.comparison) {
+                (ComparisonGradient::Surrogate { width }, Some(_)) => {
+                    assert!(width > 0.0 && width.is_finite(), "a surrogate width must be positive and finite");
+                    Some(width)
+                }
+                (ComparisonGradient::RelativeSurrogate { fraction }, Some(comparison)) => {
+                    assert!(fraction > 0.0 && fraction.is_finite(), "a surrogate fraction must be positive and finite");
+                    let range = evaluate_affine_range(&comparison.terms, comparison.bias, &self.ranges);
+                    let span = range.max - range.min;
+                    // A difference with one possible value is a constant bit, with no gradient.
+                    if !(span > 0.0 && span.is_finite()) {
+                        continue;
+                    }
+                    Some(fraction * span)
+                }
+                _ => None,
+            };
+            if let (Some(width), Some(comparison)) = (surrogate_width, &operation.comparison) {
                 let difference = comparison.bias
                     + comparison
                         .terms
