@@ -10,6 +10,7 @@
   one-wire values keep their ±2^24 check. New: `rotate_left`, `rotate_right` and `wrapping_mul` on circuit integers,
   for every integer type. The SHA-1 example now uses `u32` words: 68,036 operations in 1,616 layers (was 99,698 in
   4,011 with `[bool; 32]` words), about 2x faster.
+- `saturating_add`/`saturating_sub` on a wide value fail the build instead of wrapping first and clamping after.
 - `Val`'s wire is now read with `Val::wire()`, which panics for a wide value (breaking for code that read the field);
   `Val::is_wide()` tells them apart.
 - Integer `if` merges keep their result within the type's range, so loop-carried integers no longer widen every pass.

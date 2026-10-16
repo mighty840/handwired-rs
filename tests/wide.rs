@@ -242,3 +242,58 @@ fn narrow_rotates_and_wrapping_products_match_rust() {
         assert_eq!(result, narrow_ops(a, b, c, d), "{a} {b} {c} {d}");
     }
 }
+
+/// Negative one-wire values widened to bytes: sign-extended through every byte.
+#[handwired]
+#[allow(clippy::needless_range_loop)]
+fn signed_widening(#[range(-1000, 1000)] a: i32, b: i16) -> ([u8; 4], [u8; 8], [u8; 4]) {
+    let unsigned = a as u32;
+    let long = b as u64;
+    let shifted = a.wrapping_add(0x7FFF_FFFF);
+    let mut long_bytes = [0u8; 8];
+    for i in 0..8 {
+        long_bytes[i] = (long >> (8 * i)) as u8;
+    }
+    (
+        [unsigned as u8, (unsigned >> 8) as u8, (unsigned >> 16) as u8, (unsigned >> 24) as u8],
+        long_bytes,
+        [shifted as u8, (shifted >> 8) as u8, (shifted >> 16) as u8, (shifted >> 24) as u8],
+    )
+}
+
+#[test]
+fn negative_values_sign_extend_into_bytes() {
+    let compiled = signed_widening_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let records: Vec<(i32, i16)> = (i16::MIN..=i16::MAX).map(|b| ((b as i32).clamp(-1000, 1000), b)).collect();
+    let results = compiled.run_batch(&records).unwrap();
+    for (&(a, b), result) in records.iter().zip(&results) {
+        assert_eq!(*result, signed_widening(a, b), "{a} {b}");
+    }
+}
+
+/// Saturating arithmetic on a wide value would wrap first, so it fails the build.
+#[handwired]
+fn saturating_wide(a: u8) -> u8 {
+    let big = (a as u32) << 24;
+    (big.saturating_add(0x0100_0000) >> 24) as u8
+}
+
+#[test]
+#[should_panic(expected = "saturating_add on a value beyond ±2^24")]
+fn saturating_on_wide_values_is_rejected() {
+    saturating_wide_circuit();
+}
+
+/// `abs` of a wide value needs one wire, and says so.
+#[handwired]
+fn abs_wide(a: u8) -> u8 {
+    let big = ((a as u32) << 24) as i32;
+    (big.abs() >> 24) as u8
+}
+
+#[test]
+#[should_panic(expected = "held as bytes")]
+fn abs_on_wide_values_is_rejected() {
+    abs_wide_circuit();
+}

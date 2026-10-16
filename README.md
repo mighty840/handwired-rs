@@ -261,7 +261,9 @@ fn fnv1a(bytes: [u8; 8]) -> [u8; 4] {
 ```
 
 Parameters and results are still one cell each within ±2^24, so a wide value goes in and out as bytes (or masked
-within 24 bits); returning one fails the build with a message saying so. Plain `+`, `-` and `*` of one-wire values
+within 24 bits); returning one fails the build with a message saying so. A value that went wide stays wide, even
+where its value would fit again, e.g. `x & 0xFFFF_FF00`: narrow it with `as u8`/`as u16` or a shift and cast before
+returning it. Plain `+`, `-` and `*` of one-wire values
 keep failing the build where their declared ranges may leave ±2^24, so a loose `#[range]` isn't silently turned into
 byte arithmetic, which costs far more. The tests check u32, i32 and u64 arithmetic, bitwise operators, shifts by
 inputs up to 63, rotates and casts against Rust (sampled over the full width, plus every carry boundary and the
@@ -399,7 +401,8 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
-  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value and wide values cast to `f32` aren't supported. `f32` parameters need `#[range]`s.
+  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value, `saturating_*` and `abs` on one, and wide values cast to
+  `f32` aren't supported; each fails the build with a message. `f32` parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
   value (`for x in arr`), not with `.iter()`.

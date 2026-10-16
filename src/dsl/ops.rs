@@ -344,12 +344,27 @@ impl<T: Num> Val<T> {
 
     #[track_caller]
     pub fn saturating_add(self, other: impl super::Conv<Val<T>>) -> Val<T> {
-        self.saturate(self + other.conv())
+        let other = other.conv();
+        Val::not_wide_for("saturating_add", self, other);
+        self.saturate(self + other)
     }
 
     #[track_caller]
     pub fn saturating_sub(self, other: impl super::Conv<Val<T>>) -> Val<T> {
-        self.saturate(self - other.conv())
+        let other = other.conv();
+        Val::not_wide_for("saturating_sub", self, other);
+        self.saturate(self - other)
+    }
+
+    /// Wide sums wrap, so clamping them afterwards would be wrong: refuse instead of building that.
+    #[track_caller]
+    fn not_wide_for(name: &str, left: Val<T>, right: Val<T>) {
+        if left.is_wide() || right.is_wide() {
+            panic!(
+                "{}: {name} on a value beyond ±2^24 isn't supported yet; use wrapping_* or compare first",
+                Location::caller()
+            );
+        }
     }
 
     #[track_caller]
