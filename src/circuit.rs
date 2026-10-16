@@ -326,6 +326,11 @@ impl Circuit {
         Ok(())
     }
 
+    /// Mark a wire as an exact bit without declaring its range again, for inlining.
+    pub(crate) fn mark_exact_bit(&mut self, wire: Wire) {
+        self.exact_bits[wire.index()] = true;
+    }
+
     /// Record an operation as a rounding point, e.g. each step of a round chain.
     pub fn mark_rounding_point(&mut self, wire: Wire) {
         self.record_rounding_point(wire, RoundingPointKind::Marked);

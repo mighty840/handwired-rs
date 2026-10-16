@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `Circuit::inline_circuit`, ported from handwired: rebuilds one circuit's operations in another, through the
+  builder, so matching expressions are shared; declarations, rounding points, comparison bits and one-hot groups
+  carry over.
 - Prefix networks, ported from handwired: `sklansky_prefix` and `brent_kung_prefix` for any associative combine. At
   1,024 rows, Brent-Kung running totals are 2,036 operations in 18 layers, as handwired's docs state.
 - `Compiled::gradients(&records, output, weights, options)`: the exact backward pass summed over many records with

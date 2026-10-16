@@ -35,6 +35,7 @@ mod circuit;
 pub mod dsl;
 mod emit;
 mod gather;
+mod inline;
 mod numeric;
 mod prefix;
 mod tensor;

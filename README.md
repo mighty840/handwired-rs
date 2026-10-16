@@ -224,7 +224,8 @@ points, since fights with the same hits change winner together, so about ±1% is
 | One-hot groups and gather lowering, `recompute_depths` | ✅ on the CPU executors and the GPU |
 | `emit_argmax`, `emit_first_active` (selection trees that declare their one-hot groups) | ✅ costs match handwired's docs |
 | Prefix networks (`sklansky_prefix`, `brent_kung_prefix`), and `dsl::running_sums` for `#[handwired]` | ✅ running-totals cost matches handwired's docs |
-| Springs / host timing, `inline_circuit` | ⏳ not yet |
+| `inline_circuit` (one circuit into another, sharing matching expressions) | ✅ |
+| Springs / host timing | ⏳ not yet |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
 | GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
 
@@ -284,7 +285,7 @@ silent zero (`BackpropOptions` picks straight-through or zero). A value read at 
 `params[faction * 2 + stat]`, does get the gradient, on the entry the index selects. There's no export to a deep
 learning framework.
 
-**Not ported from handwired.** Springs and frame timing, circuit inlining,
+**Not ported from handwired.** Springs and frame timing,
 index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON
 search).
 
@@ -313,6 +314,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/prefix.rs`: prefix networks, ported from handwired's tests: every prefix in order for 1 to 70 items, the
   combine and depth formulas, a state machine scan against its loop, the running-totals cost at 1,024 rows against
   handwired's docs, and `dsl::running_sums` in `#[handwired]` functions.
+- `tests/inline.rs`: `inline_circuit`, ported from handwired's tests (shared expressions, kept rounding and term
+  order, declarations on read wires, exact bits, one-hot groups), and random circuits inlined into a larger one with
+  every value kept. A plain `affine`'s terms are summed in wire order, so inlining through permuted cells can change
+  its last bit; `round_affine` keeps its order.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested
