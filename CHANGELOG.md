@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (handwired-rs, handwired-rs-gpu)
+## 0.2.0 (2026-10-16): handwired-rs, handwired-rs-gpu
 
 - `BatchExecutor`: runs a compiled program on 64 records at a time, vectorized (AVX2 when available, picked at run
   time) and bit for bit identical to `TensorExecutor`; `BatchExecutor::run_parallel` splits records across threads.
