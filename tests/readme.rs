@@ -35,5 +35,8 @@ fn readme_example() {
     compiled.verify(20_000).unwrap(); // vs. the original function, on sampled inputs
     let (on, armed) = compiled.eval(&(false, false, true, false, false, 10.0, 0)).unwrap();
     assert_eq!((on, armed), (false, true));
+    let records = vec![(false, false, true, false, false, 10.0, 0); 10_000];
+    let results = compiled.run_batch(&records).unwrap(); // many records: vectorized, on every core
+    assert!(results.iter().all(|&result| result == (false, true)));
     println!("live operations: {}", compiled.program.live_operation_count());
 }

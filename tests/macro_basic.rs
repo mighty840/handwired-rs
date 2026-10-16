@@ -98,6 +98,18 @@ fn integer_arithmetic_and_casts() {
     assert_eq!(report.skipped, 0);
 }
 
+#[test]
+fn batches_run_typed_records() {
+    let compiled = arithmetic_circuit();
+    let records: Vec<(u8, u8, i16)> =
+        (0..1_000).map(|n: i32| ((n * 7 % 256) as u8, (n * 13 % 256) as u8, (n * 37 % 2001 - 1000) as i16)).collect();
+    let results = compiled.run_batch(&records).unwrap();
+    for (record, result) in records.iter().zip(results) {
+        assert_eq!(result, arithmetic(record.0, record.1, record.2), "{record:?}");
+    }
+    assert!(matches!(compiled.run_batch(&[(0, 0, 2000)]), Err(handwired_rs::Error::SourceOutOfRange { .. })));
+}
+
 /// Overflow panics in the function, so those inputs don't constrain the circuit.
 #[handwired]
 fn overflowing(a: u8, b: u8) -> u8 {

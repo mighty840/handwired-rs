@@ -8,6 +8,7 @@ use std::sync::Once;
 
 use super::{CONTEXT, Kind, Mux, Scalar, Val, is_wide, with_circuit};
 use crate::Error;
+use crate::batch::BatchExecutor;
 use crate::circuit::Circuit;
 use crate::tensor::{TensorExecutor, TensorProgram};
 use crate::wire::Wire;
@@ -353,6 +354,22 @@ impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args,
         self.circuit.validate_source_ranges(&source)?;
         let mut executor = TensorExecutor::new(&self.program);
         Ok(R::decode(&mut executor.run(&source).iter().copied()))
+    }
+
+    /// Run the compiled program on many records at once, vectorized across records and split across all cores.
+    pub fn run_batch(&self, records: &[Args]) -> Result<Vec<R>, Error> {
+        let mut sources = Vec::with_capacity(records.len() * Args::CELLS);
+        for record in records {
+            let start = sources.len();
+            record.encode(&mut sources);
+            self.circuit.validate_source_ranges(&sources[start..])?;
+        }
+        let outputs = BatchExecutor::run_parallel(&self.program, &sources, None);
+        Ok(outputs
+            .chunks(self.outputs.len().max(1))
+            .take(records.len())
+            .map(|record| R::decode(&mut record.iter().copied()))
+            .collect())
     }
 
     /// Run the reference evaluator, one operation at a time.

@@ -4,7 +4,9 @@
 mod common;
 
 use common::Rng;
-use handwired_rs::{Circuit, CompareOptions, Lin, OutOfRange, Relation, TensorExecutor, Wire, emit_compare_with};
+use handwired_rs::{
+    BatchExecutor, Circuit, CompareOptions, LANES, Lin, OutOfRange, Relation, TensorExecutor, Wire, emit_compare_with,
+};
 
 const SOURCES: usize = 6;
 
@@ -81,6 +83,28 @@ fn compiled_programs_match_the_reference_evaluator() {
         }
     }
     assert!(total_layers > 200, "the random circuits should span several layers");
+}
+
+/// The batch executor gives every root bit for bit what the one-record executor gives, in full and partial
+/// batches, on one thread and on several.
+#[test]
+fn batches_match_the_one_record_executor() {
+    let mut rng = Rng::new(7);
+    for circuit_number in 0..60 {
+        let circuit = random_circuit(&mut rng, 60);
+        let roots: Vec<Wire> = (SOURCES..circuit.width()).step_by(3).map(Wire::from_index).collect();
+        let program = circuit.compile(Some(&roots));
+        let records = [1, LANES, 2 * LANES + 5][circuit_number % 3];
+        let sources: Vec<f32> = (0..records).flat_map(|_| random_source(&mut rng)).collect();
+        let mut executor = TensorExecutor::new(&program);
+        let expected: Vec<u32> =
+            sources.chunks(SOURCES).flat_map(|source| executor.run(source).to_vec()).map(f32::to_bits).collect();
+        let batched: Vec<u32> = BatchExecutor::new(&program).run(&sources).into_iter().map(f32::to_bits).collect();
+        assert_eq!(batched, expected);
+        let parallel: Vec<u32> =
+            BatchExecutor::run_parallel(&program, &sources, Some(3)).into_iter().map(f32::to_bits).collect();
+        assert_eq!(parallel, expected);
+    }
 }
 
 #[test]

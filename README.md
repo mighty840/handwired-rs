@@ -59,6 +59,8 @@ fn toggle_step(on: bool, armed: bool, down: bool, up: bool, cancel: bool,
 let compiled = toggle_step_circuit();          // the circuit, compiled to tensor layers
 compiled.verify(20_000).unwrap();              // vs. the original function, on sampled inputs
 let (on, armed) = compiled.eval(&(false, false, true, false, false, 10.0, 0)).unwrap();
+let records = vec![(false, false, true, false, false, 10.0, 0); 10_000];
+let results = compiled.run_batch(&records).unwrap();  // many records: vectorized, on every core
 ```
 
 The attribute keeps the function as it is, as the oracle, and adds `toggle_step_hw` (the body over circuit values,
@@ -116,19 +118,26 @@ no NaN or infinity occurs.
 
 `cargo run --release -p handwired-rs-gpu --example search` searches 100,000 32-byte records for a 3-byte pattern with a
 `#[handwired]` function (890 operations in 127 layers) and checks every result against the function. On an AMD Ryzen
-laptop's integrated Radeon (Renoir):
+laptop (Ryzen with 12 threads, integrated Radeon Renoir):
 
 | | 100,000 records |
 | --- | --- |
-| the plain Rust function | 1.7 ms |
-| CPU tensor executor, one thread | 754 ms |
-| GPU, including upload and read-back | 27 ms |
+| the plain Rust function | 1.5 ms |
+| CPU `TensorExecutor`, one record at a time | 660 ms |
+| CPU `BatchExecutor`, 64 records at a time, one thread | 36 ms |
+| CPU `BatchExecutor`, 12 threads | 13 ms |
+| GPU, including upload and read-back | 30 ms |
+
+`BatchExecutor` keeps each value as a block of 64 records, so every row is a loop the compiler vectorizes (with AVX2
+when the CPU has it, picked at run time), and every lane repeats the one-record arithmetic in the same order: the
+results are bit for bit those of `TensorExecutor`. `Compiled::run_batch` runs it on typed records across all cores.
 
 `cargo run --release -p handwired-rs-gpu --example kv_store` is a fixed-capacity key-value store (16 slots, get, put,
 delete) written as one `#[handwired]` function from the store's state to its next state and the answer. A `get` is hard
 attention: a one-hot match of the key against every slot, multiplied into the values. The example verifies it against
 the function, runs a put/get/delete session through the circuit, and runs 100,000 operations on 100,000 separate stores
-in one GPU dispatch (1,082 operations in 70 layers; 50 ms on the GPU against 6.4 ms for the plain function).
+in one GPU dispatch (1,082 operations in 70 layers; 50 ms on the GPU and 60 ms with `run_batch` on 12 threads,
+against 6.6 ms for the plain function).
 
 The circuit form doesn't make a program like this faster than native Rust; what it adds is that the same exact
 program is a stack of sparse matrix multiplications with ReLUs, which runs on tensor hardware and is differentiable.
@@ -145,7 +154,7 @@ Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests sk
 | `emit_compare`: integer bits on grids, sign cascade, `end_with_boolean` | ✅ cost table matches handwired's docs |
 | `emit_minimum_exact`, `emit_maximum_exact`, `emit_clamp_exact` | ✅ |
 | Reference evaluator and reverse-mode backprop (boolean / index gradient rules) | ✅ |
-| Layered sparse compiler with dead-operation removal, CPU executor | ✅ |
+| Layered sparse compiler with dead-operation removal, CPU executor | ✅ plus a vectorized, multithreaded batch executor |
 | Source table cells (`input`, `event`, `state`, `state_bit`, grids, validation) | ✅ simplified |
 | One-hot groups and gather lowering, `recompute_depths` | ⏳ not yet |
 | Springs / host timing, `emit_argmax`, `emit_first_active`, `inline_circuit`, prefix networks | ⏳ not yet |
@@ -177,9 +186,8 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element (gather
 lowering isn't ported), early `return`s chain into deep layer stacks (the search example has 127 layers), and
-integer division by a constant is a table read over the dividend's range (at most 65,536 entries). On the CPU, a
-circuit is far slower than the function it came from, and on the GPU the search example is still about 16x slower
-than plain Rust: the point is exactness, differentiability and a tensor-shaped program, not speed.
+integer division by a constant is a table read over the dividend's range (at most 65,536 entries). The search example
+is still about 9x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is exactness, differentiability and a tensor-shaped program, not speed.
 
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
@@ -205,7 +213,8 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   `docs/execution-model.md`, and every bit against the native f32 comparison on equal values, one-ulp neighbors,
   subnormal differences and range ends, through both evaluators.
 - `tests/tensor.rs`: seeded random circuits, where the compiled program has to reproduce every live value of the
-  reference evaluator.
+  reference evaluator, and the batch executor has to reproduce the one-record executor bit for bit, in full and
+  partial batches, on one thread and several.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested

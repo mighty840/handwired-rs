@@ -29,6 +29,7 @@
 //! operand without a finite declared range, since that is a bug in the
 //! program being built. Evaluation returns [`Error`] for bad input data.
 
+mod batch;
 mod cells;
 mod circuit;
 pub mod dsl;
@@ -37,6 +38,7 @@ mod numeric;
 mod tensor;
 mod wire;
 
+pub use batch::{BatchExecutor, LANES};
 pub use cells::{CellSpec, Policy, SourceTable, constant, event, input, input_bit, state, state_bit};
 pub use circuit::{
     BackpropOptions, BooleanGradient, CandidateTable, Circuit, IndexGradient, IndexRead, Macro, OpKind, Operation,

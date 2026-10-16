@@ -128,6 +128,10 @@ fn main() {
     let native: Vec<_> =
         records.iter().map(|&(keys, values, op, key, value)| kv_step(keys, values, op, key, value)).collect();
     let native_time = start.elapsed();
+    let start = Instant::now();
+    let on_cpu = compiled.run_batch(&records).unwrap();
+    let cpu_time = start.elapsed();
+    assert_eq!(on_cpu, native, "the CPU batch executor disagrees with the function");
     let gpu = Gpu::new().expect("a GPU adapter");
     let batch = GpuBatch::new(&gpu, &compiled).unwrap();
     let _ = batch.run(&gpu, &records[..1024]).unwrap();
@@ -136,6 +140,8 @@ fn main() {
     let gpu_time = start.elapsed();
     assert_eq!(on_gpu, native, "the GPU disagrees with the function");
     println!("100,000 operations on separate stores; every result matches the function");
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
     println!("plain Rust: {native_time:>9.1?}");
+    println!("CPU batch executor ({threads} threads): {cpu_time:>9.1?}  (range checks included)");
     println!("GPU ({}, {:?}): {gpu_time:>9.1?}  (upload, run, read back)", gpu.info.name, gpu.info.device_type);
 }

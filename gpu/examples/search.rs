@@ -5,8 +5,8 @@
 
 use std::time::Instant;
 
-use handwired_rs::TensorExecutor;
 use handwired_rs::handwired;
+use handwired_rs::{BatchExecutor, LANES, TensorExecutor};
 use handwired_rs_gpu::{Gpu, GpuBatch};
 
 const TEXT: usize = 32;
@@ -71,6 +71,21 @@ fn main() {
         .collect();
     let cpu_time = start.elapsed();
 
+    let mut sources = Vec::with_capacity(records * (TEXT + 3));
+    for record in &inputs {
+        handwired_rs::dsl::Params::encode(record, &mut sources);
+    }
+    let decode = |outputs: Vec<f32>| -> Vec<(bool, u8)> {
+        outputs.chunks(2).map(|record| (record[0] == 1.0, record[1] as u8)).collect()
+    };
+    let start = Instant::now();
+    let batched = decode(BatchExecutor::new(&compiled.program).run(&sources));
+    let batch_time = start.elapsed();
+    let start = Instant::now();
+    let parallel = decode(BatchExecutor::run_parallel(&compiled.program, &sources, None));
+    let parallel_time = start.elapsed();
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
+
     let gpu = Gpu::new().expect("a GPU adapter");
     let start = Instant::now();
     let batch = GpuBatch::new(&gpu, &compiled).unwrap();
@@ -81,11 +96,15 @@ fn main() {
     let gpu_time = start.elapsed();
 
     assert_eq!(cpu, native, "the CPU tensor executor disagrees with the function");
+    assert_eq!(batched, native, "the batch executor disagrees with the function");
+    assert_eq!(parallel, native, "the parallel batch executor disagrees with the function");
     assert_eq!(on_gpu, native, "the GPU disagrees with the function");
     let found = native.iter().filter(|result| result.0).count();
     println!("{records} records, {found} contain their pattern; every result matches the function");
     println!("plain Rust:           {native_time:>10.1?}");
-    println!("CPU tensor executor:  {cpu_time:>10.1?}  (one thread)");
+    println!("CPU tensor executor:  {cpu_time:>10.1?}  (one record at a time)");
+    println!("CPU batch executor:   {batch_time:>10.1?}  ({LANES} records at a time, one thread)");
+    println!("CPU batch executor:   {parallel_time:>10.1?}  ({threads} threads)");
     println!(
         "GPU ({}, {:?}): {gpu_time:>10.1?}  (upload, run, read back; shader built once in {shader_time:.1?})",
         gpu.info.name, gpu.info.device_type
