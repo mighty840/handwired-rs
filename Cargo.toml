@@ -10,7 +10,7 @@ keywords = ["neural-network", "circuit", "differentiable", "webgpu", "proc-macro
 categories = ["science", "compilers"]
 
 [dependencies]
-handwired-rs-macros = { path = "macros", version = "0.1.0" }
+handwired-rs-macros = { path = "macros", version = "0.2.0" }
 
 [workspace]
 members = ["macros", "gpu"]

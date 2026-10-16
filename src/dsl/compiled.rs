@@ -34,6 +34,18 @@ impl Attrs {
         }
     }
 
+    /// A struct field's attributes: the parameter's per-scalar `ranges` when given, else the field's own
+    /// declarations, else the parameter's `range` and `grid`.
+    pub fn field(&self, own: &Attrs, offset: usize, cells: usize) -> Attrs {
+        if self.ranges.is_some() {
+            self.part(offset, cells)
+        } else if own.range.is_some() || own.ranges.is_some() || own.grid.is_some() {
+            *own
+        } else {
+            *self
+        }
+    }
+
     /// Check that `ranges`, if given, has one range per scalar of a value of `cells` scalars.
     pub fn expect_cells(&self, cells: usize) {
         if let Some(ranges) = self.ranges {

@@ -10,6 +10,12 @@
   `verify` now returns a typed `dsl::VerifyError` (`Mismatch` or `OutOfRange`) instead of a `String`.
 - A test that gradients through a read at a computed index, e.g. `params[faction * 2 + stat]`, reach the selected
   entry.
+- `#[derive(HwType)]` (handwired-rs-macros 0.2.0): structs with named fields as `#[handwired]` parameters, locals and
+  results, with `#[range]`, `#[ranges]` and `#[grid]` per field; field reads and writes, also through computed indices,
+  struct literals with `..base`, and structs as an `if`'s value. It adds `<Name>Hw`, the struct's circuit form.
+- `#[ranges([(lo, hi), ...])]` or `#[ranges(CONST)]` on a parameter: one range per scalar. `Attrs` gains `ranges`.
+- Tuples of up to 12 and parameter lists of up to 16.
+- `<fn>_hw` and `<fn>_circuit()` get doc comments and the function's lint attributes, so `missing_docs` passes.
 - `handwired_rs::dsl::running_sums` for `#[handwired]` functions: running totals of an integer array, a loop in the
   function and a Brent-Kung network in the circuit.
 

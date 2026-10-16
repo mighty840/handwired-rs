@@ -26,6 +26,21 @@ use syn::{
     parse_macro_input, parse_quote,
 };
 
+mod derive;
+
+/// `#[derive(HwType)]`: a struct with named fields of scalars, arrays and other derived structs as a `#[handwired]`
+/// parameter, local or result. It adds `<Name>Hw`, the struct's circuit form, which `#[handwired]` code builds from
+/// `Name { ... }` literals. Fields take `#[range(lo, hi)]`, `#[ranges([...])]` and `#[grid(step)]`. The struct also
+/// needs `Clone`, `Copy`, `Debug` and `PartialEq` to be a parameter or result.
+#[proc_macro_derive(HwType, attributes(range, ranges, grid))]
+pub fn derive_hw_type(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    match derive::expand(input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
 #[proc_macro_attribute]
 pub fn handwired(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -126,11 +141,17 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         return Err(error);
     }
 
+    let hw_doc = format!("The circuit form of [`{}`], which `#[handwired]` code calls.", function.sig.ident);
+    let circuit_doc =
+        format!("Builds and compiles the circuit of [`{}`], with the function kept as its oracle.", function.sig.ident);
     let lint_attributes: Vec<&syn::Attribute> = function
         .attrs
         .iter()
         .filter(|attribute| ["allow", "expect", "warn", "deny"].iter().any(|lint| attribute.path().is_ident(lint)))
         .collect();
+    // `_circuit()` takes no parameters, so an `#[expect]` about them would go unfulfilled there.
+    let circuit_lint_attributes: Vec<&syn::Attribute> =
+        lint_attributes.iter().copied().filter(|attribute| !attribute.path().is_ident("expect")).collect();
     let visibility = &function.vis;
     let name = &function.sig.ident;
     let hw_name = format_ident!("{}_hw", name);
@@ -188,9 +209,12 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         #[allow(unused_mut, unused_variables, unused_assignments, unused_parens, unused_braces, unreachable_code)]
         #[allow(clippy::all)]
         #(#lint_attributes)*
+        #[doc = #hw_doc]
         #visibility fn #hw_name(#(#hw_params),*) -> <#return_type as ::handwired_rs::dsl::HwType>::Val #body
 
         #[allow(clippy::all)]
+        #(#circuit_lint_attributes)*
+        #[doc = #circuit_doc]
         #visibility fn #circuit_name() -> ::handwired_rs::dsl::Compiled<(#(#types,)*), #return_type> {
             const __ATTRS: &[::handwired_rs::dsl::Attrs] = &[#(#attrs),*];
             ::handwired_rs::dsl::Compiled::build(
@@ -583,7 +607,29 @@ impl Rewriter {
             Expr::Closure(_) => self.error(span, "closures aren't supported in #[handwired] functions"),
             Expr::Macro(_) => self.error(span, "macros aren't supported inside #[handwired] functions"),
             Expr::Let(_) => self.error(span, "`if let` isn't supported in #[handwired] functions"),
-            Expr::Struct(_) => self.error(span, "structs aren't supported in #[handwired] functions yet"),
+            Expr::Struct(structure) => {
+                // `State { .. }` builds the circuit form, `StateHw`, which #[derive(HwType)] adds.
+                if structure.qself.is_some() {
+                    return self.error(span, "qualified struct paths aren't supported in #[handwired] functions");
+                }
+                let mut path = structure.path.clone();
+                let last = path.segments.last_mut().unwrap();
+                last.ident = format_ident!("{}Hw", last.ident);
+                let fields: Vec<Tokens> = structure
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let member = &field.member;
+                        let value = self.expr(&field.expr, true, None);
+                        quote_spanned!(field.span()=> #member: ::handwired_rs::dsl::Conv::conv(#value))
+                    })
+                    .collect();
+                let rest = structure.rest.as_ref().map(|rest| {
+                    let rest = self.expr(rest, true, None);
+                    quote!(..::handwired_rs::dsl::Lift::lift(#rest))
+                });
+                quote_spanned!(span=> #path { #(#fields,)* #rest })
+            }
             _ => self.error(span, "this expression isn't supported in #[handwired] functions"),
         }
     }
@@ -647,6 +693,18 @@ impl Rewriter {
     fn assign_to(&mut self, target: &Expr, value: Tokens) -> Tokens {
         let span = target.span();
         match target {
+            // `a[i].field = v` for a struct element: read the element, set the field, and store it back at i.
+            Expr::Field(field) if contains_index(&field.base) => {
+                let current = self.expr(&field.base, true, None);
+                let element = self.fresh("element");
+                let member = &field.member;
+                let updated = quote_spanned!(span=> {
+                    let mut #element = #current;
+                    #element.#member = ::handwired_rs::dsl::Conv::conv(#value);
+                    #element
+                });
+                self.assign_to(&field.base, updated)
+            }
             Expr::Path(_) | Expr::Field(_) => {
                 let target = target.to_token_stream();
                 quote_spanned!(span=> #target = ::handwired_rs::dsl::Conv::conv(#value))
@@ -897,6 +955,16 @@ fn pattern_condition(pattern: &Pat, subject: &Expr, bindings: &mut Vec<Stmt>) ->
         }
         other => return Err(syn::Error::new(other.span(), "this pattern isn't supported in #[handwired] functions")),
     })
+}
+
+/// Whether a place reads through an index, e.g. `units[i].hp`.
+fn contains_index(expr: &Expr) -> bool {
+    match expr {
+        Expr::Index(_) => true,
+        Expr::Field(field) => contains_index(&field.base),
+        Expr::Paren(inner) => contains_index(&inner.expr),
+        _ => false,
+    }
 }
 
 /// Names that a branch assigns and didn't declare itself: the variables an

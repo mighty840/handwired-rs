@@ -441,3 +441,38 @@ fn selection_trees_match_the_reference() {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, handwired_rs::dsl::HwType)]
+struct Tally {
+    #[range(0, 100)]
+    counts: [u8; 3],
+    #[range(0, 2)]
+    leader: u8,
+}
+
+/// A struct in and out, with a field written at a computed index.
+#[handwired]
+fn vote(tally: Tally, #[range(0, 2)] choice: u8) -> Tally {
+    let mut next = tally;
+    next.counts[choice as usize] += 1;
+    if next.counts[choice as usize] > next.counts[tally.leader as usize] {
+        next.leader = choice;
+    }
+    next
+}
+
+#[test]
+fn struct_batches_match_the_function() {
+    let Some(gpu) = gpu() else { return };
+    let batch = GpuBatch::new(&gpu, &vote_circuit()).unwrap();
+    let mut rng = Rng(5);
+    let records: Vec<(Tally, u8)> = (0..4096)
+        .map(|_| {
+            let tally = Tally { counts: std::array::from_fn(|_| rng.below(99) as u8), leader: rng.below(3) as u8 };
+            (tally, rng.below(3) as u8)
+        })
+        .collect();
+    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+        assert_eq!(result, vote(record.0, record.1), "{record:?}");
+    }
+}

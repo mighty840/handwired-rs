@@ -73,7 +73,8 @@ code like `a + b` or `x.min(y)` stays as written. The macro rewrites only what R
 Overflow and out-of-bounds indexing panic in the oracle, so their circuit values are unspecified. `verify` skips
 inputs where the oracle panics; run it with overflow checks on (e.g. a debug build).
 
-**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays and tuples as parameters, results and locals;
+**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12) and `#[derive(HwType)]`
+structs as parameters (up to 16), results and locals;
 `+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant (as a table read); f32 `/` by a power of two;
 `min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
 like Rust); `if`/`else` as a statement or value; `match` with literals, ranges, `|`, guards, tuples, bindings and
@@ -93,7 +94,44 @@ branches and flagged loops also leaves for real.
 **Declarations:** `#[range(lo, hi)]` is required on `f32` parameters and on integer types wider than 2^24 (`u32`,
 `i32`, ...), whose values must stay within ±2^24 (the build panics, pointing at the operation, if they may not).
 `#[grid(step)]` declares a power-of-two grid, e.g. `1.0 / 64.0` for pointer coordinates, which makes comparisons
-cheap.
+cheap. On a compound parameter, `#[range]` applies to every scalar, while `#[ranges([(2, 20), (1, 200), (2, 6)])]`, or
+`#[ranges(CONST)]` with a `const CONST: [(f64, f64); N]`, gives each scalar its own, in order.
+
+**Structs.** `#[derive(Clone, Copy, Debug, PartialEq, handwired_rs::dsl::HwType)]` on a struct with named fields of
+scalars, arrays and other derived structs makes it a parameter, local and result, with `#[range]`, `#[ranges]` and
+`#[grid]` on each field:
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, HwType)]
+pub struct Pig {
+    #[range(0, 100)]
+    pub scores: [u8; 2],
+    #[range(0, 1)]
+    pub turn: u8,
+    #[range(0, 30)]
+    pub pot: u8,
+}
+
+#[handwired]
+pub fn pig_step(state: Pig, #[range(1, 6)] roll: u8, hold: bool) -> Pig {
+    let mut next = state;
+    if hold {
+        next.scores[state.turn as usize] += state.pot;
+        next.pot = 0;
+        next.turn = 1 - state.turn;
+    } else if roll == 1 {
+        next.pot = 0;
+        next.turn = 1 - state.turn;
+    } else {
+        next.pot += roll;
+    }
+    next
+}
+```
+
+Field reads and writes, including through computed indices (`board.units[i].health = ...`), struct literals with
+`..base`, and structs as an `if`'s value all work. The derive adds `PigHw`, the struct's circuit form, which `Pig { .. }`
+literals in `#[handwired]` code build.
 
 See [Limitations](#limitations) for what isn't supported.
 
@@ -215,7 +253,7 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **The `#[handwired]` subset.**
 - Not supported: `while`/`loop` (every loop needs bounds that don't depend on the inputs), labeled `break`/`continue`,
-  division or remainder by an input value, shifts and integer bitwise operators, structs, enums, `Option`, closures,
+  division or remainder by an input value, shifts and integer bitwise operators, enums, generic structs, `Option`, closures,
   references, generic functions, `if let`, and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s, and every value must stay within
   ±2^24, the integers f32 holds exactly. `f32` parameters need `#[range]`s.

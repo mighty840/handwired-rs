@@ -30,6 +30,8 @@ pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
     placeholder, store, unsupported,
 };
+/// `#[derive(HwType)]` on a struct with named fields; see the macros crate.
+pub use handwired_rs_macros::HwType;
 pub use ops::{Cmp, Logic, RunningSum, and, eq, ge, gt, le, lt, ne, or, running_sums};
 
 thread_local! {
