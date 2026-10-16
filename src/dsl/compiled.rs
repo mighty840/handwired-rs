@@ -13,16 +13,43 @@ use crate::circuit::{BackpropOptions, Circuit};
 use crate::tensor::{TensorExecutor, TensorProgram};
 use crate::wire::Wire;
 
-/// What a parameter declares with `#[range(lo, hi)]` and `#[grid(step)]`. A
-/// parameter of a compound type, e.g. `[u8; 4]`, applies them to each scalar.
+/// What a parameter declares with `#[range(lo, hi)]`, `#[ranges([...])]` and `#[grid(step)]`. A parameter of a
+/// compound type, e.g. `[u8; 4]`, applies `range` and `grid` to each scalar; `ranges` gives one range per scalar, in
+/// [`HwType::encode`] order.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Attrs {
     pub range: Option<(f64, f64)>,
     pub grid: Option<f64>,
+    pub ranges: Option<&'static [(f64, f64)]>,
 }
 
 impl Attrs {
-    pub const NONE: Attrs = Attrs { range: None, grid: None };
+    pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None };
+
+    /// The attributes of the `cells` scalars starting at `offset` within this value.
+    pub fn part(&self, offset: usize, cells: usize) -> Attrs {
+        match self.ranges {
+            Some(ranges) => Attrs { ranges: Some(&ranges[offset..offset + cells]), ..*self },
+            None => *self,
+        }
+    }
+
+    /// Check that `ranges`, if given, has one range per scalar of a value of `cells` scalars.
+    pub fn expect_cells(&self, cells: usize) {
+        if let Some(ranges) = self.ranges {
+            assert_eq!(ranges.len(), cells, "#[ranges] gives {} ranges for {cells} scalars", ranges.len());
+        }
+    }
+
+    fn scalar_range(&self) -> Option<(f64, f64)> {
+        match self.ranges {
+            Some(ranges) => {
+                self.expect_cells(1);
+                Some(ranges[0])
+            }
+            None => self.range,
+        }
+    }
 }
 
 /// Hands out source cells while a function's parameters are declared.
@@ -66,7 +93,7 @@ pub trait HwType: Sized {
 }
 
 fn scalar_range<T: Scalar>(attrs: &Attrs) -> (f64, f64) {
-    match (T::KIND, attrs.range) {
+    match (T::KIND, attrs.scalar_range()) {
         (Kind::Bool, _) => (0.0, 1.0),
         (_, Some((low, high))) => {
             assert!(
@@ -172,7 +199,8 @@ impl<T: HwType, const N: usize> HwType for [T; N] {
     type Val = [T::Val; N];
     const CELLS: usize = N * T::CELLS;
     fn declare(inputs: &mut Inputs, attrs: &Attrs) -> Self::Val {
-        std::array::from_fn(|_| T::declare(inputs, attrs))
+        attrs.expect_cells(<Self as HwType>::CELLS);
+        std::array::from_fn(|item| T::declare(inputs, &attrs.part(item * T::CELLS, T::CELLS)))
     }
     fn encode(&self, out: &mut Vec<f32>) {
         for item in self {
@@ -188,7 +216,8 @@ impl<T: HwType, const N: usize> HwType for [T; N] {
         }
     }
     fn sample(rng: &mut Rng, attrs: &Attrs) -> Self {
-        std::array::from_fn(|_| T::sample(rng, attrs))
+        attrs.expect_cells(<Self as HwType>::CELLS);
+        std::array::from_fn(|item| T::sample(rng, &attrs.part(item * T::CELLS, T::CELLS)))
     }
     fn zero() -> Self::Val {
         std::array::from_fn(|_| T::zero())
@@ -221,11 +250,19 @@ impl Params for () {
 
 macro_rules! tuple_types {
     ($(($($name:ident $index:tt),+)),*) => {$(
+        // The last component's offset is never read.
+        #[allow(unused_assignments)]
         impl<$($name: HwType),+> HwType for ($($name,)+) {
             type Val = ($($name::Val,)+);
             const CELLS: usize = 0 $(+ $name::CELLS)+;
             fn declare(inputs: &mut Inputs, attrs: &Attrs) -> Self::Val {
-                ($($name::declare(inputs, attrs),)+)
+                attrs.expect_cells(<Self as HwType>::CELLS);
+                let mut offset = 0;
+                ($({
+                    let part = attrs.part(offset, $name::CELLS);
+                    offset += $name::CELLS;
+                    $name::declare(inputs, &part)
+                },)+)
             }
             fn encode(&self, out: &mut Vec<f32>) {
                 $(self.$index.encode(out);)+
@@ -237,7 +274,13 @@ macro_rules! tuple_types {
                 $($name::outputs(&value.$index, out);)+
             }
             fn sample(rng: &mut Rng, attrs: &Attrs) -> Self {
-                ($($name::sample(rng, attrs),)+)
+                attrs.expect_cells(<Self as HwType>::CELLS);
+                let mut offset = 0;
+                ($({
+                    let part = attrs.part(offset, $name::CELLS);
+                    offset += $name::CELLS;
+                    $name::sample(rng, &part)
+                },)+)
             }
             fn zero() -> Self::Val {
                 ($($name::zero(),)+)
@@ -251,7 +294,13 @@ tuple_types!(
     (A0 0, A1 1, A2 2),
     (A0 0, A1 1, A2 2, A3 3),
     (A0 0, A1 1, A2 2, A3 3, A4 4),
-    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5)
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11)
 );
 
 macro_rules! tuple_params {
@@ -279,7 +328,11 @@ tuple_params!(
     (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8),
     (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9),
     (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10),
-    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11)
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11, A12 12),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11, A12 12, A13 13),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11, A12 12, A13 13, A14 14),
+    (A0 0, A1 1, A2 2, A3 3, A4 4, A5 5, A6 6, A7 7, A8 8, A9 9, A10 10, A11 11, A12 12, A13 13, A14 14, A15 15)
 );
 
 /// A `#[handwired]` function's circuit, compiled for its outputs, with the

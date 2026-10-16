@@ -142,3 +142,31 @@ fn verify_with_takes_inputs_from_a_sampler() {
     let error = compiled.verify_with(10, 1, |_| (0, 0, 5000)).unwrap_err();
     assert!(matches!(&error, VerifyError::OutOfRange { inputs, .. } if inputs == "(0, 0, 5000)"), "{error}");
 }
+
+const STAT_RANGES: [(f64, f64); 3] = [(2.0, 20.0), (1.0, 200.0), (2.0, 6.0)];
+
+/// Damage, health and the roll to hit, each with its own range: from a list, or from a constant.
+#[handwired]
+fn expected_hits(
+    #[ranges([(2, 20), (1, 200), (2, 6)])] stats: [f32; 3],
+    #[ranges(STAT_RANGES)] other: [f32; 3],
+) -> f32 {
+    let hit_chance = (7.0 - stats[2]) / 8.0;
+    stats[0] * hit_chance - other[1] / 64.0
+}
+
+#[test]
+fn ranges_declare_one_range_per_scalar() {
+    let compiled = expected_hits_circuit();
+    for (cell, &(low, high)) in STAT_RANGES.iter().chain(&STAT_RANGES).enumerate() {
+        let range = compiled.circuit.range(compiled.circuit.source(cell));
+        assert_eq!((range.min, range.max), (low, high), "cell {cell}");
+    }
+    assert_eq!(compiled.verify(2_000).unwrap().skipped, 0);
+    // Sampling stays within each scalar's own range.
+    let report = compiled.verify_with(500, 3, |rng| {
+        let stat = |rng: &mut handwired_rs::dsl::Rng, (low, high): (f64, f64)| (low + rng.unit() * (high - low)) as f32;
+        (STAT_RANGES.map(|range| stat(rng, range)), STAT_RANGES.map(|range| stat(rng, range)))
+    });
+    assert_eq!(report.unwrap().checked, 500);
+}

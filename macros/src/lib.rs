@@ -45,6 +45,7 @@ struct Param {
     ty: Type,
     range: Option<(Expr, Expr)>,
     grid: Option<Expr>,
+    ranges: Option<Expr>,
 }
 
 fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
@@ -72,8 +73,9 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
             ty: (*typed.ty).clone(),
             range: None,
             grid: None,
+            ranges: None,
         };
-        // Take #[range] and #[grid] off the parameter, since rustc rejects unknown parameter attributes.
+        // Take #[range], #[ranges] and #[grid] off the parameter, since rustc rejects unknown parameter attributes.
         let mut kept = Vec::new();
         for attribute in typed.attrs.drain(..) {
             if attribute.path().is_ident("range") {
@@ -83,6 +85,8 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
                     return Err(syn::Error::new(attribute.span(), "expected #[range(lo, hi)]"));
                 }
                 param.range = Some((bounds[0].clone(), bounds[1].clone()));
+            } else if attribute.path().is_ident("ranges") {
+                param.ranges = Some(attribute.parse_args::<Expr>()?);
             } else if attribute.path().is_ident("grid") {
                 param.grid = Some(attribute.parse_args::<Expr>()?);
             } else {
@@ -147,7 +151,31 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
             Some(step) => quote!(::core::option::Option::Some((#step) as f64)),
             None => quote!(::core::option::Option::None),
         };
-        quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid })
+        let ranges = match &param.ranges {
+            // A list written out, e.g. #[ranges([(2, 20), (1, 200)])]: each bound becomes an f64.
+            Some(Expr::Array(list)) => {
+                let mut pairs = Vec::new();
+                for element in &list.elems {
+                    match element {
+                        Expr::Tuple(pair) if pair.elems.len() == 2 => {
+                            let (low, high) = (&pair.elems[0], &pair.elems[1]);
+                            pairs.push(quote!(((#low) as f64, (#high) as f64)));
+                        }
+                        other => {
+                            return syn::Error::new(other.span(), "expected a (lo, hi) pair").to_compile_error();
+                        }
+                    }
+                }
+                quote!(::core::option::Option::Some(&[#(#pairs),*]))
+            }
+            // A constant of type [(f64, f64); N].
+            Some(other) => quote!(::core::option::Option::Some(&#other)),
+            None => quote!(::core::option::Option::None),
+        };
+        if param.range.is_some() && param.ranges.is_some() {
+            return syn::Error::new(param.name.span(), "use either #[range] or #[ranges], not both").to_compile_error();
+        }
+        quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid, ranges: #ranges })
     });
     let declarations = params.iter().enumerate().map(|(index, param)| {
         let (name, ty) = (&param.name, &param.ty);
