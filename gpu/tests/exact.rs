@@ -1,7 +1,8 @@
 //! The GPU reproduces the CPU reference evaluator bit for bit.
 
 use handwired_rs::{
-    Circuit, CompareOptions, CompileOptions, Lin, OutOfRange, Relation, Wire, emit_compare_with, handwired,
+    Circuit, CompareOptions, CompileOptions, Lin, OutOfRange, Relation, Wire, emit_argmax, emit_compare_with,
+    emit_first_active, handwired,
 };
 use handwired_rs_gpu::{Gpu, GpuBatch, GpuProgram};
 
@@ -385,4 +386,58 @@ fn batches_check_declared_ranges() {
     assert_eq!(batch.run(&gpu, &[(0,), (99,), (100,)]).unwrap(), vec![0, 49, 50]);
     let error = batch.run(&gpu, &[(5,), (101,)]).unwrap_err();
     assert!(error.to_string().contains("record 1: source cell 0 is 101"), "{error}");
+}
+
+/// An argmax and a first-active selection, each read through a masked sum that lowers to a gather, on the GPU.
+#[test]
+fn selection_trees_match_the_reference() {
+    let Some(gpu) = gpu() else { return };
+    let count = 13;
+    let mut circuit = Circuit::new(3 * count + 1);
+    let unit = circuit.source(3 * count);
+    circuit.assume_range(unit, 1.0, 1.0);
+    let scores: Vec<Wire> = (0..count).map(|item| circuit.source(item)).collect();
+    let hits: Vec<Wire> = (count..2 * count).map(|item| circuit.source(item)).collect();
+    let values: Vec<Wire> = (2 * count..3 * count).map(|item| circuit.source(item)).collect();
+    for &wire in scores.iter().chain(&hits) {
+        circuit.assume_range(wire, 0.0, 1.0);
+    }
+    for &value in &values {
+        circuit.assume_range(value, -1e4, 1e4);
+    }
+    let (best, best_score) = emit_argmax(&mut circuit, &scores, unit);
+    let bits: Vec<Wire> = hits.iter().map(|&hit| circuit.boolean(hit)).collect();
+    let first = emit_first_active(&mut circuit, unit, &bits);
+    let mut roots = vec![best_score];
+    for selection in [&best, &first] {
+        let terms: Vec<(Wire, f64)> =
+            selection.iter().zip(&values).map(|(&bit, &value)| (circuit.multiply(bit, value), 1.0)).collect();
+        roots.push(circuit.affine(Lin::new(terms, 0.0)));
+    }
+    roots.extend(&best);
+    let program = circuit.compile(Some(&roots));
+    assert_eq!(program.gather_read_count(), 2);
+    let mut rng = Rng(31);
+    let records: Vec<Vec<f32>> = (0..512)
+        .map(|_| {
+            let mut record: Vec<f32> = (0..count)
+                .map(|_| {
+                    let uniform = rng.uniform(0.0, 1.0) as f32;
+                    rng.pick(&[0.25, 0.5, uniform])
+                })
+                .collect();
+            record.extend((0..count).map(|_| if rng.below(4) == 0 { 1.0 } else { 0.0 }));
+            record.extend((0..count).map(|_| rng.uniform(-1e4, 1e4) as f32));
+            record.push(1.0);
+            record
+        })
+        .collect();
+    let gpu_program = GpuProgram::from_program(&gpu, &program).unwrap();
+    let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
+    for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
+        let values = circuit.evaluate_reference(record).unwrap();
+        for (root, &got) in roots.iter().zip(got) {
+            assert!(got == values[root.index()], "wire {}: GPU {got:e}, CPU {:e}", root.index(), values[root.index()]);
+        }
+    }
 }

@@ -46,8 +46,9 @@ pub use circuit::{
     Operation, OutOfRange, RoundingPointKind,
 };
 pub use emit::{
-    CompareOptions, Relation, emit_and, emit_clamp_exact, emit_compare, emit_compare_with, emit_maximum,
-    emit_maximum_exact, emit_minimum, emit_minimum_exact, emit_not, emit_or, emit_relu, emit_round, emit_select,
+    CompareOptions, Relation, emit_and, emit_argmax, emit_clamp_exact, emit_compare, emit_compare_with,
+    emit_first_active, emit_maximum, emit_maximum_exact, emit_minimum, emit_minimum_exact, emit_not, emit_or,
+    emit_relu, emit_round, emit_select, is_proven_bit,
 };
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;

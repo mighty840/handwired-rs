@@ -182,7 +182,8 @@ points, since fights with the same hits change winner together, so about ±1% is
 | Layered sparse compiler with dead-operation removal, CPU executor | ✅ plus a vectorized, multithreaded batch executor |
 | Source table cells (`input`, `event`, `state`, `state_bit`, grids, validation) | ✅ simplified |
 | One-hot groups and gather lowering, `recompute_depths` | ✅ on the CPU executors and the GPU |
-| Springs / host timing, `emit_argmax`, `emit_first_active`, `inline_circuit`, prefix networks | ⏳ not yet |
+| `emit_argmax`, `emit_first_active` (selection trees that declare their one-hot groups) | ✅ costs match handwired's docs |
+| Springs / host timing, `inline_circuit`, prefix networks | ⏳ not yet |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
 | GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
 
@@ -195,6 +196,10 @@ compiles to a gather: the executor finds the selected position once per group an
 product per member. It's exact, up to the sign of an exactly zero result, for candidates with finite bounds; sums that
 don't match the pattern exactly (a scaled term, a missing member, an extra term, two groups) stay dense.
 `CompileOptions { recompute_depths: true, .. }` also moves what follows a gather up to the layer after its inputs.
+`emit_argmax(circuit, scores, unit)` (the highest score in 0..1, ties to the left) and `emit_first_active(circuit, gate,
+candidates)` (the first hit) build such selections as balanced trees, O(n) operations in O(log n) layers, and declare
+the group themselves: `emit_argmax` always, `emit_first_active` only when the gate and candidates are proven bits
+(`is_proven_bit`). At 64 candidates they're 437 operations in 33 layers and 316 in 31, as handwired's docs state.
 `circuit.validate_one_hot_groups(&values)` checks the declaration in tests, since a false one makes the gather read
 the wrong value. `#[handwired]` doesn't declare groups yet. For a read at a computed integer index, an index read (one
 operation) is cheaper than a one-hot group; `#[handwired]` array reads already use one.
@@ -233,7 +238,7 @@ lets drivers assume there are no NaNs or infinities. There's no backward pass on
 **Differentiability.** The reference evaluator has a backward pass, tested on small cases; nothing here trains a
 circuit yet, and there's no export to a deep learning framework.
 
-**Not ported from handwired.** Springs and frame timing, `argmax`/`first_active`, circuit inlining, prefix networks,
+**Not ported from handwired.** Springs and frame timing, circuit inlining, prefix networks,
 index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON
 search).
 
@@ -254,7 +259,11 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/gather.rs`: gather lowering, ported from handwired's gather-lowering tests: which masked sums lower (both
   product orientations, mixed-sign products, biases, chained gathers, groups that allow all zeros) and which stay dense
   (scaled, missing or extra terms, two groups, values that may be infinite), one index resolution per group, extreme
-  values, recomputed depths, a violated declaration, and seeded random circuits, through both CPU executors.
+  values, recomputed depths, a violated declaration, and seeded random circuits with hand-declared, `emit_argmax` and
+  `emit_first_active` groups, through both CPU executors.
+- `tests/select.rs`: `emit_argmax` and `emit_first_active`, ported from handwired's tests: winners, ties to the left,
+  the non-transitive tie band, which selections declare a group, a fractional selection that must not lower, and
+  their costs at 64 candidates against handwired's docs.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested
@@ -263,9 +272,9 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/toggle.rs`: handwired's toggle-switch template (without its spring), compared frame by frame with the same
   switch in plain Rust, over a scripted trace and random traces near the track edges.
 
-- `gpu/tests/exact.rs`: random circuits, comparisons at their edges, gathers over one-hot groups and `#[handwired]`
-  batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), and comparisons of
-  subnormal values, checked against the flushing model when the GPU flushes them.
+- `gpu/tests/exact.rs`: random circuits, comparisons at their edges, gathers over one-hot groups, selection trees and
+  `#[handwired]` batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), range
+  checks on batches, and comparisons of subnormal values, checked against the flushing model when the GPU flushes them.
 
 `cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
 toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262

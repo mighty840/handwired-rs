@@ -3,7 +3,7 @@
 //! Ported from handwired's `numeric-ui-core.ts`. Each function documents when
 //! its result is exact; see handwired's docs/expressions.md for the cost tables.
 
-use crate::circuit::{Circuit, OpKind, RoundingPointKind};
+use crate::circuit::{Circuit, OpKind, OutOfRange, RoundingPointKind};
 use crate::numeric::{
     EXACT_GRID_STEPS, Range, fround, largest_grid, lowest_power_of_two, pow2, power_of_two_exponent_at_least,
     smallest_grid,
@@ -505,6 +505,204 @@ fn emit_select_operand(circuit: &mut Circuit, bit: Wire, off: Wire, on: Wire, mi
     let result = circuit.affine(selected_on + selected_off);
     circuit.assume_range(result, minimum, maximum);
     result
+}
+
+// ---- Selection trees ------------------------------------------------------------------------------------------------
+
+enum WinnerNode {
+    Leaf { mass: Wire, item: usize },
+    Pair { mass: Wire, left: Box<WinnerNode>, right: Box<WinnerNode> },
+}
+
+impl WinnerNode {
+    fn mass(&self) -> Wire {
+        match self {
+            WinnerNode::Leaf { mass, .. } | WinnerNode::Pair { mass, .. } => *mass,
+        }
+    }
+}
+
+enum ArgmaxNode {
+    Leaf { score: Wire, item: usize },
+    Pair { score: Wire, left_wins: Wire, left: Box<ArgmaxNode>, right: Box<ArgmaxNode> },
+}
+
+impl ArgmaxNode {
+    fn score(&self) -> Wire {
+        match self {
+            ArgmaxNode::Leaf { score, .. } | ArgmaxNode::Pair { score, .. } => *score,
+        }
+    }
+}
+
+/// Pair up a level of a balanced tree, carrying an odd last node up unchanged.
+fn pair_up<T>(level: Vec<T>, mut combine: impl FnMut(T, T) -> T) -> Vec<T> {
+    let mut next = Vec::with_capacity(level.len().div_ceil(2));
+    let mut nodes = level.into_iter();
+    while let Some(left) = nodes.next() {
+        match nodes.next() {
+            Some(right) => next.push(combine(left, right)),
+            None => next.push(left),
+        }
+    }
+    next
+}
+
+/// The highest of `scores`, each declared within 0..1, as a one-hot selection and the winning score. `unit` must be
+/// declared exactly 1. Up a balanced tree, each pair compares its scores with a boolean atom and keeps the larger
+/// one; down, the unit follows the comparison bits, so exactly one output is 1 and the selection is declared as a
+/// one-hot group. Exact ties keep the left score, and so does a right score larger by less than about 9e-8 (for
+/// some scores up to 2.4e-7), a band that isn't transitive, so the tree can pick differently from a loop. Needs an
+/// executor that keeps FP32 rounding at the atoms. O(n) operations in O(log n) layers.
+pub fn emit_argmax(circuit: &mut Circuit, scores: &[Wire], unit: Wire) -> (Vec<Wire>, Wire) {
+    assert!(!scores.is_empty(), "argmax needs at least one score");
+    let unit_range = circuit.range(unit);
+    assert!(unit_range.min == 1.0 && unit_range.max == 1.0, "argmax unit must equal one");
+    let mut level: Vec<ArgmaxNode> = scores
+        .iter()
+        .enumerate()
+        .map(|(item, &score)| {
+            let range = circuit.range(score);
+            assert!(range.min >= 0.0 && range.max <= 1.0, "argmax scores must be within zero and one");
+            ArgmaxNode::Leaf { score, item }
+        })
+        .collect();
+    while level.len() > 1 {
+        level = pair_up(level, |left, right| {
+            // One FP32 step above 0.5 makes exact ties choose left without exceeding 1.
+            const COMPARISON_BIAS: f64 = 0.500_000_059_604_644_8;
+            const COMPARISON_SCALE: f64 = 0.499_999_940_395_355_2;
+            let comparison =
+                circuit.affine(left.score() * COMPARISON_SCALE - right.score() * COMPARISON_SCALE + COMPARISON_BIAS);
+            circuit.assume_range(comparison, 0.0, 1.0);
+            let left_wins = circuit.boolean(comparison);
+            let score = emit_select(circuit, left_wins, right.score(), left.score());
+            ArgmaxNode::Pair { score, left_wins, left: Box::new(left), right: Box::new(right) }
+        });
+    }
+    let root = level.pop().unwrap();
+    let score = root.score();
+    let mut selected = vec![unit; scores.len()];
+    route_argmax(circuit, root, unit, &mut selected);
+    // The unit goes down exactly one path, so the selection is an exact one-hot by construction.
+    circuit.assume_one_hot(&selected, false);
+    (selected, score)
+}
+
+fn route_argmax(circuit: &mut Circuit, node: ArgmaxNode, route: Wire, selected: &mut [Wire]) {
+    match node {
+        ArgmaxNode::Leaf { item, .. } => selected[item] = route,
+        ArgmaxNode::Pair { left_wins, left, right, .. } => {
+            let left_route = circuit.multiply(route, left_wins);
+            let right_route = circuit.affine(route - left_route);
+            circuit.assume_range(right_route, 0.0, 1.0);
+            route_argmax(circuit, *left, left_route, selected);
+            route_argmax(circuit, *right, right_route, selected);
+        }
+    }
+}
+
+/// The first of `candidates` that is 1, gated by `active`, as a selection: up a balanced tree, each pair keeps the
+/// [`emit_maximum`] of its masses; down, a node's route `r` gives `r × left maximum` to its left child and the rest
+/// to its right child, starting from `active × root maximum`. An exact one-hot, or all zeros, when the gate and
+/// every candidate are exact bits; fractional candidates split the route, e.g. [0.5, 0] sends 0.25 to each output.
+/// The selection is declared as a one-hot group (allowing all zeros) only when the gate and every candidate are
+/// proven bits (see [`is_proven_bit`]). O(n) operations in O(log n) layers.
+pub fn emit_first_active(circuit: &mut Circuit, active: Wire, candidates: &[Wire]) -> Vec<Wire> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let active_range = circuit.range(active);
+    assert!(active_range.min >= 0.0 && active_range.max <= 1.0, "winner selection must be gated within zero and one");
+    let mut level: Vec<WinnerNode> = candidates
+        .iter()
+        .enumerate()
+        .map(|(item, &mass)| {
+            let range = circuit.range(mass);
+            assert!(range.min >= 0.0 && range.max <= 1.0, "winner candidates must be within zero and one");
+            WinnerNode::Leaf { mass, item }
+        })
+        .collect();
+    while level.len() > 1 {
+        level = pair_up(level, |left, right| {
+            let mass = emit_maximum(circuit, left.mass(), right.mass());
+            WinnerNode::Pair { mass, left: Box::new(left), right: Box::new(right) }
+        });
+    }
+    let root = level.pop().unwrap();
+    let start = circuit.multiply(active, root.mass());
+    let mut selected = vec![start; candidates.len()];
+    route_winner(circuit, root, start, &mut selected);
+    // Fractional candidates are legal and give a fractional selection, so the group is declared only for proven
+    // bits. Constant candidates can fold routes together, and a group needs distinct members.
+    if is_proven_bit(circuit, active) && candidates.iter().all(|&candidate| is_proven_bit(circuit, candidate)) {
+        let distinct = selected.iter().enumerate().all(|(index, wire)| !selected[..index].contains(wire));
+        if distinct {
+            circuit.assume_one_hot(&selected, true);
+        }
+    }
+    selected
+}
+
+fn route_winner(circuit: &mut Circuit, node: WinnerNode, route: Wire, selected: &mut [Wire]) {
+    match node {
+        WinnerNode::Leaf { item, .. } => selected[item] = route,
+        WinnerNode::Pair { left, right, .. } => {
+            let left_route = circuit.multiply(route, left.mass());
+            let right_route = circuit.affine(route - left_route);
+            circuit.assume_range(right_route, 0.0, 1.0);
+            route_winner(circuit, *left, left_route, selected);
+            route_winner(circuit, *right, right_route, selected);
+        }
+    }
+}
+
+/// Whether a wire provably holds exactly 0 or 1: its declared range is a single 0 or 1, a boolean atom made it,
+/// [`emit_compare`] returned it, it belongs to a declared one-hot group, or it's an index read whose reachable
+/// candidates are all proven bits (a side that reads zero adds +0, also a bit). A 0..1 range alone isn't enough.
+pub fn is_proven_bit(circuit: &Circuit, wire: Wire) -> bool {
+    let mut pending = vec![wire];
+    let mut visited = Vec::new();
+    while let Some(current) = pending.pop() {
+        if visited.contains(&current) {
+            continue;
+        }
+        visited.push(current);
+        if is_bit_by_construction(circuit, current) {
+            continue;
+        }
+        let Some(read) = circuit.operation(current).and_then(|operation| operation.index_read.as_ref()) else {
+            return false;
+        };
+        // The candidates reachable from the index range the builder accepted.
+        let candidates = &circuit.tables[read.table].candidates;
+        let count = candidates.len() as i64;
+        let lowest = (read.index_range.min.floor() as i64).clamp(-1, count);
+        let highest = (read.index_range.max.floor() as i64).clamp(-1, count);
+        for position in lowest.max(0)..=highest.min(count - 1) {
+            pending.push(candidates[position as usize]);
+        }
+        if lowest < 0 && read.below == OutOfRange::Clamp {
+            pending.push(candidates[0]);
+        }
+        if highest > count - 1 && read.above == OutOfRange::Clamp {
+            pending.push(candidates[candidates.len() - 1]);
+        }
+    }
+    true
+}
+
+fn is_bit_by_construction(circuit: &Circuit, wire: Wire) -> bool {
+    let range = circuit.range(wire);
+    if range.min == range.max && (range.min == 0.0 || range.min == 1.0) {
+        return true;
+    }
+    if let Some(operation) = circuit.operation(wire)
+        && (operation.kind == OpKind::Boolean || operation.comparison_bit)
+    {
+        return true;
+    }
+    circuit.one_hot_groups().iter().any(|group| group.members.contains(&wire))
 }
 
 #[cfg(test)]

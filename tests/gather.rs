@@ -6,7 +6,9 @@
 mod common;
 
 use common::Rng;
-use handwired_rs::{BatchExecutor, Circuit, CompileOptions, TensorProgram, Wire, emit_maximum};
+use handwired_rs::{
+    BatchExecutor, Circuit, CompileOptions, TensorProgram, Wire, emit_argmax, emit_first_active, emit_maximum,
+};
 
 const DENSE: CompileOptions = CompileOptions { lower_gathers: false, recompute_depths: false };
 
@@ -474,8 +476,9 @@ fn recomputed_depths_move_operations_after_a_gather_earlier() {
     }
 }
 
-/// Random circuits with one or two groups, declared before or after their reads, masked sums over nonnegative,
-/// signed and extreme-range values (some of them earlier reads), and ordinary operations on top.
+/// Random circuits with one or two groups, declared by hand before or after their reads or by `emit_argmax` and
+/// `emit_first_active`, masked sums over nonnegative, signed and extreme-range values (some of them earlier reads),
+/// and ordinary operations on top.
 #[test]
 fn seeded_circuits_with_gathers_match_the_reference() {
     let mut rng = Rng::new(0x6a7_3e5);
@@ -484,19 +487,44 @@ fn seeded_circuits_with_gathers_match_the_reference() {
         let group_sizes: Vec<usize> = (0..1 + rng.below(2)).map(|_| 1 + rng.below(9)).collect();
         let (nonnegative, signed, extreme) = (6, 6, 4);
         let control_size: usize = group_sizes.iter().sum();
-        let mut circuit = Circuit::new(control_size + nonnegative + signed + extreme);
-        let mut groups = Vec::new();
+        let mut circuit = Circuit::new(control_size + nonnegative + signed + extreme + 1);
+        let unit = circuit.source(circuit.source_size() - 1);
+        circuit.assume_range(unit, 1.0, 1.0);
+        // Each group is declared by hand before or after its reads, or by emit_argmax over scores, or by
+        // emit_first_active over boolean atoms; the sampler writes its control cells to match.
+        let mut groups: Vec<(Vec<Wire>, bool, usize)> = Vec::new();
         let mut start = 0;
         let mut late = Vec::new();
         for &size in &group_sizes {
-            let members: Vec<Wire> = (start..start + size).map(|cell| circuit.source(cell)).collect();
-            let allow_all_zero = rng.below(3) == 0;
-            if rng.below(2) == 0 {
-                circuit.assume_one_hot(&members, allow_all_zero);
-            } else {
-                late.push((members.clone(), allow_all_zero));
-            }
-            groups.push((members, allow_all_zero));
+            let controls: Vec<Wire> = (start..start + size).map(|cell| circuit.source(cell)).collect();
+            let kind = rng.below(4);
+            let (members, allow_all_zero) = match kind {
+                0 | 1 => {
+                    let allow_all_zero = rng.below(3) == 0;
+                    if kind == 0 {
+                        circuit.assume_one_hot(&controls, allow_all_zero);
+                    } else {
+                        late.push((controls.clone(), allow_all_zero));
+                    }
+                    (controls, allow_all_zero)
+                }
+                2 => {
+                    for &control in &controls {
+                        circuit.assume_range(control, 0.0, 1.0);
+                    }
+                    (emit_argmax(&mut circuit, &controls, unit).0, false)
+                }
+                _ => {
+                    for &control in &controls {
+                        circuit.assume_range(control, 0.0, 1.0);
+                    }
+                    let bits: Vec<Wire> = controls.iter().map(|&control| circuit.boolean(control)).collect();
+                    let selected = emit_first_active(&mut circuit, unit, &bits);
+                    assert!(circuit.one_hot_groups().iter().any(|group| group.members == selected));
+                    (selected, true)
+                }
+            };
+            groups.push((members, allow_all_zero, kind));
             start += size;
         }
         let pool_start = control_size;
@@ -513,10 +541,11 @@ fn seeded_circuits_with_gathers_match_the_reference() {
                 f32::MAX as f64,
             );
         }
-        let mut values: Vec<Wire> = (pool_start..circuit.source_size()).map(|cell| circuit.source(cell)).collect();
+        let pool_end = pool_start + nonnegative + signed + extreme;
+        let mut values: Vec<Wire> = (pool_start..pool_end).map(|cell| circuit.source(cell)).collect();
         let mut roots = Vec::new();
         for _ in 0..1 + rng.below(4) {
-            let (members, _) = &groups[rng.below(groups.len())];
+            let (members, _, _) = &groups[rng.below(groups.len())];
             let candidates: Vec<Wire> = members.iter().map(|_| values[rng.below(values.len())]).collect();
             let bias = [0.0, 0.5, -3.0][rng.below(3)];
             let read = masked_sum(&mut circuit, members, &candidates, bias);
@@ -538,12 +567,28 @@ fn seeded_circuits_with_gathers_match_the_reference() {
         let dense = circuit.compile_with(Some(&roots), DENSE);
         for _ in 0..4 {
             let mut source = vec![0.0f32; circuit.source_size()];
+            source[circuit.source_size() - 1] = 1.0;
             let mut start = 0;
-            for (members, allow_all_zero) in &groups {
-                let choices = members.len() + usize::from(*allow_all_zero);
-                let choice = rng.below(choices);
-                if choice < members.len() {
-                    source[start + choice] = 1.0;
+            for (members, allow_all_zero, kind) in &groups {
+                match kind {
+                    0 | 1 => {
+                        let choice = rng.below(members.len() + usize::from(*allow_all_zero));
+                        if choice < members.len() {
+                            source[start + choice] = 1.0;
+                        }
+                    }
+                    // Scores, with ties now and then.
+                    2 => {
+                        for cell in &mut source[start..start + members.len()] {
+                            *cell = [0.25, 0.5, rng.uniform(0.0, 1.0) as f32][rng.below(3)];
+                        }
+                    }
+                    // Hits, for the boolean atoms to keep.
+                    _ => {
+                        for cell in &mut source[start..start + members.len()] {
+                            *cell = if rng.below(3) == 0 { 1.0 } else { 0.0 };
+                        }
+                    }
                 }
                 start += members.len();
             }

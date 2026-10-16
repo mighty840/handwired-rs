@@ -12,6 +12,9 @@
   (`lower_gathers`, on by default, and `recompute_depths`). `TensorLayer` and `TensorProgram` gain gather fields.
 - GPU: a test of comparisons on subnormal values. Both tested GPUs (RADV, lavapipe) flush subnormals to zero; every
   comparison touching one follows that model, and every other comparison stays exact. Documented in the README.
+- `emit_argmax` and `emit_first_active`, ported from handwired, with `is_proven_bit`: balanced selection trees that
+  declare their one-hot groups, so masked reads of their selections lower to gathers. Their costs at 64 candidates
+  match handwired's docs.
 - Examples: `sha1` ports sha1_smol's SHA-1 block function and checks every digest against it; `balance` tunes a
   dice game's unit stats to 50/50 matchups with gradients from the circuit's backward pass.
 - `GpuBatch::run` and `GpuBatch::encode` check every record against the declared ranges, as the docs said; `encode`
