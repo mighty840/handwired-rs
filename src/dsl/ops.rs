@@ -549,3 +549,56 @@ impl BitXor<Val<bool>> for bool {
         right ^ self
     }
 }
+
+// ---- Running sums ---------------------------------------------------------------------------------------------------
+
+/// A value [`running_sums`] can add: native integers in the original function, integer circuit values in its trace.
+pub trait RunningSum: Copy {
+    /// Whether the sums are built as a prefix network (circuit values) rather than a loop (native values).
+    const NETWORK: bool;
+    fn add_pair(self, later: Self) -> Self;
+}
+
+macro_rules! native_running_sum {
+    ($($int:ty),*) => {$(
+        impl RunningSum for $int {
+            const NETWORK: bool = false;
+            #[track_caller]
+            fn add_pair(self, later: $int) -> $int {
+                self + later
+            }
+        }
+    )*};
+}
+native_running_sum!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
+
+impl<T: super::IntScalar> RunningSum for Val<T> {
+    const NETWORK: bool = true;
+    #[track_caller]
+    fn add_pair(self, later: Val<T>) -> Val<T> {
+        let at = Location::caller();
+        // Its own operation, so the network keeps its shape instead of being copied into wider sums.
+        with_circuit(|circuit| {
+            let wire = circuit.round_affine(self.wire + later.wire);
+            number(circuit, wire, at)
+        })
+    }
+}
+
+/// Every running total of `items`: `[a, a + b, a + b + c, ...]`, for integers. The original function adds them in a
+/// loop; the circuit uses a Brent-Kung prefix network, about 2n additions in about 2 log2(n) layers instead of n - 1
+/// in n - 1. Integer sums within ±2^24 are exact in any grouping, so both agree; f32 sums would round differently,
+/// so they aren't accepted.
+#[track_caller]
+pub fn running_sums<T: RunningSum, const N: usize>(items: [T; N]) -> [T; N] {
+    if T::NETWORK {
+        let sums = crate::prefix::brent_kung_prefix(&items, |&earlier, &later| earlier.add_pair(later));
+        std::array::from_fn(|index| sums[index])
+    } else {
+        let mut sums = items;
+        for index in 1..N {
+            sums[index] = sums[index - 1].add_pair(items[index]);
+        }
+        sums
+    }
+}

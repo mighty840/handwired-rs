@@ -78,7 +78,9 @@ inputs where the oracle panics; run it with overflow checks on (e.g. a debug bui
 `min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
 like Rust); `if`/`else` as a statement or value; `match` with literals, ranges, `|`, guards, tuples, bindings and
 consts; `for` over ranges or arrays that don't depend on the inputs (they unroll); array reads and writes at computed
-indices, including nested arrays; calls to other `#[handwired]` functions; `return`, `break` and `continue` anywhere,
+indices, including nested arrays; calls to other `#[handwired]` functions; `handwired_rs::dsl::running_sums(array)`
+for integers (a loop in the function, a Brent-Kung prefix network of about 2 log2(n) layers in the circuit; call it by
+that path, since the macro treats a bare lowercase call as another `#[handwired]` function); `return`, `break` and `continue` anywhere,
 including under conditions that depend on the inputs.
 
 **Early exits:** the trace runs every path, so an exit can't leave it. A function that returns early gets a `done` bit
@@ -183,7 +185,8 @@ points, since fights with the same hits change winner together, so about ±1% is
 | Source table cells (`input`, `event`, `state`, `state_bit`, grids, validation) | ✅ simplified |
 | One-hot groups and gather lowering, `recompute_depths` | ✅ on the CPU executors and the GPU |
 | `emit_argmax`, `emit_first_active` (selection trees that declare their one-hot groups) | ✅ costs match handwired's docs |
-| Springs / host timing, `inline_circuit`, prefix networks | ⏳ not yet |
+| Prefix networks (`sklansky_prefix`, `brent_kung_prefix`), and `dsl::running_sums` for `#[handwired]` | ✅ running-totals cost matches handwired's docs |
+| Springs / host timing, `inline_circuit` | ⏳ not yet |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
 | GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
 
@@ -238,7 +241,7 @@ lets drivers assume there are no NaNs or infinities. There's no backward pass on
 **Differentiability.** The reference evaluator has a backward pass, tested on small cases; nothing here trains a
 circuit yet, and there's no export to a deep learning framework.
 
-**Not ported from handwired.** Springs and frame timing, circuit inlining, prefix networks,
+**Not ported from handwired.** Springs and frame timing, circuit inlining,
 index-read tables stored as a base and a stride, and its demos (HandwiredOS, the learned gallery, JSON
 search).
 
@@ -264,6 +267,9 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
 - `tests/select.rs`: `emit_argmax` and `emit_first_active`, ported from handwired's tests: winners, ties to the left,
   the non-transitive tie band, which selections declare a group, a fractional selection that must not lower, and
   their costs at 64 candidates against handwired's docs.
+- `tests/prefix.rs`: prefix networks, ported from handwired's tests: every prefix in order for 1 to 70 items, the
+  combine and depth formulas, a state machine scan against its loop, the running-totals cost at 1,024 rows against
+  handwired's docs, and `dsl::running_sums` in `#[handwired]` functions.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested

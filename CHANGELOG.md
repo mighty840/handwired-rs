@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Prefix networks, ported from handwired: `sklansky_prefix` and `brent_kung_prefix` for any associative combine. At
+  1,024 rows, Brent-Kung running totals are 2,036 operations in 18 layers, as handwired's docs state.
+- `handwired_rs::dsl::running_sums` for `#[handwired]` functions: running totals of an integer array, a loop in the
+  function and a Brent-Kung network in the circuit.
+
 ## 0.2.0 (2026-10-16): handwired-rs, handwired-rs-gpu
 
 - `BatchExecutor`: runs a compiled program on 64 records at a time, vectorized (AVX2 when available, picked at run

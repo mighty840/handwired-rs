@@ -30,7 +30,7 @@ pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
     placeholder, store, unsupported,
 };
-pub use ops::{Cmp, Logic, and, eq, ge, gt, le, lt, ne, or};
+pub use ops::{Cmp, Logic, RunningSum, and, eq, ge, gt, le, lt, ne, or, running_sums};
 
 thread_local! {
     static CONTEXT: RefCell<Option<Circuit>> = const { RefCell::new(None) };

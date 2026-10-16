@@ -36,6 +36,7 @@ pub mod dsl;
 mod emit;
 mod gather;
 mod numeric;
+mod prefix;
 mod tensor;
 mod wire;
 
@@ -52,6 +53,7 @@ pub use emit::{
 };
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;
+pub use prefix::{brent_kung_prefix, sklansky_prefix};
 pub use tensor::{CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
 pub use wire::{Lin, Term, Wire};
 
