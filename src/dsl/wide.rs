@@ -480,7 +480,89 @@ pub(super) fn shift<T: Scalar>(a: &Limbs, amount: usize, motion: Motion) -> Val<
     let bits = bits_of(a);
     let zero = Val::<bool>::constant(false);
     let moved: Vec<Val<bool>> = (0..width).map(|k| source(k).map_or(zero, |from| bits[from])).collect();
-    Val::from_limbs(join_bits(&moved))
+    let limbs = join_bits(&moved);
+    let kept = width - amount;
+    if filled_with_sign && kept <= 24 {
+        // The bytes above `kept` bits repeat the sign, which no byte shows as a known constant: the one wire is the
+        // kept bits, the top one counting -2^(kept - 1).
+        let wire = with_circuit(|circuit| {
+            let mut form = Lin::new(vec![], 0.0);
+            for (k, bit) in moved[..kept].iter().enumerate() {
+                let weight = if k + 1 == kept { -((1u64 << k) as f64) } else { (1u64 << k) as f64 };
+                match circuit.constant_value(bit.wire()) {
+                    Some(value) => form.bias += value * weight,
+                    None => form.terms.push((bit.wire(), weight)),
+                }
+            }
+            let half = (1u64 << (kept - 1)) as f64;
+            let wire = if form.terms.is_empty() { constant(circuit, form.bias) } else { circuit.affine(form) };
+            settle::<T>(circuit, wire, -half, half - 1.0).wire()
+        });
+        return Val::both(wire, limbs);
+    }
+    Val::from_limbs(limbs)
+}
+
+// ---- Division by a constant -------------------------------------------------------------------------------------
+
+/// The largest divisor long division handles: each partial remainder, below the divisor, shifted by at least one
+/// bit and plus that bit, stays within 2^24.
+pub(super) const MAX_DIVISOR: u64 = 1 << 23;
+
+/// `a / divisor` and `a % divisor` for `a`'s bytes read as unsigned, by long division: digits of up to 8 bits from
+/// the top, each `remainder × 2^bits + digit` divided by comparison steps, one per quotient bit, like `carry_out`.
+/// Returns the quotient's bytes and the remainder as one wire.
+pub(super) fn divide_bytes(a: &Limbs, divisor: u64) -> (Limbs, Wire) {
+    assert!((1..=MAX_DIVISOR).contains(&divisor));
+    let d = divisor as f64;
+    // Digits as wide as keep `remainder × 2^bits + digit` below 2^24.
+    let digit_bits = (0..=8).rev().find(|&bits| (divisor - 1) * (1 << bits) + (1 << bits) - 1 < 1 << 24).unwrap();
+    let width = 8 * a.count;
+    let bits = if digit_bits == 8 { Vec::new() } else { bits_of(a) };
+    let mut quotient = vec![Val::<bool>::constant(false); width];
+    let mut remainder: Option<Wire> = None;
+    // The largest the remainder can be so far: the value read so far, until that reaches the divisor.
+    let mut remainder_max = 0.0;
+    let mut top = width;
+    while top > 0 {
+        let low = top.saturating_sub(digit_bits);
+        let size = top - low;
+        let remainder_now = remainder;
+        let wire = with_circuit(|circuit| {
+            let mut form = Lin::new(vec![], 0.0);
+            if let Some(remainder) = remainder_now {
+                form.terms.push((remainder, (1u64 << size) as f64));
+            }
+            if digit_bits == 8 && low % 8 == 0 && size == 8 {
+                form.terms.push((a.wires[low / 8], 1.0));
+            } else {
+                for (k, bit) in bits[low..top].iter().enumerate() {
+                    match circuit.constant_value(bit.wire()) {
+                        Some(value) => form.bias += value * (1u64 << k) as f64,
+                        None => form.terms.push((bit.wire(), (1u64 << k) as f64)),
+                    }
+                }
+            }
+            let largest = remainder_max * (1u64 << size) as f64 + ((1u64 << size) - 1) as f64;
+            let high = (largest / d).floor() as u64;
+            let copied = largest < 2048.0;
+            let mut rest = form;
+            for step in (0..64 - high.leading_zeros()).rev() {
+                let threshold = d * (1u64 << step) as f64;
+                let bit = integer_step(circuit, &rest, threshold, copied);
+                rest.terms.push((bit.wire(), -threshold));
+                quotient[low + step as usize] = bit;
+            }
+            remainder_max = largest.min(d - 1.0);
+            let wire = if rest.terms.is_empty() { constant(circuit, rest.bias) } else { circuit.round_affine(rest) };
+            circuit.assume_range_allowing_readers(wire, 0.0, remainder_max);
+            circuit.assume_grid_allowing_readers(wire, 1.0);
+            wire
+        });
+        remainder = Some(wire);
+        top = low;
+    }
+    (join_bits(&quotient), remainder.unwrap())
 }
 
 // ---- Casts, selects and reads ---------------------------------------------------------------------------------------

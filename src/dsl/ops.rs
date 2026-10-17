@@ -194,6 +194,9 @@ impl<T: Num> Div<T> for Val<T> {
             }
             panic!("{at}: f32 division is only supported by a power of two, got {divisor}");
         }
+        if let Some((quotient, _)) = long_division(self, right.to_i128(), at) {
+            return quotient;
+        }
         integer_table(self, at, |value| {
             let divisor = right.to_f64() as i64;
             assert!(divisor != 0, "{at}: division by zero");
@@ -207,6 +210,9 @@ impl<T: Num> Rem<T> for Val<T> {
     fn rem(self, right: T) -> Val<T> {
         let at = Location::caller();
         assert!(T::KIND == Kind::Int, "{at}: % is only supported on integers");
+        if let Some((_, remainder)) = long_division(self, right.to_i128(), at) {
+            return remainder;
+        }
         integer_table(self, at, |value| {
             let divisor = right.to_f64() as i64;
             assert!(divisor != 0, "{at}: remainder by zero");
@@ -231,6 +237,45 @@ impl<T: Num> Rem for Val<T> {
 
 /// Any integer function of one integer with few possible inputs, as one
 /// table read: e.g. `x / 3` over x in 0..255 reads a table of 256 quotients.
+/// `value / divisor` and `value % divisor` by long division over bytes, where a table over the value's range would
+/// be too large: a wide value, or a one-wire value of a wide type with a range of 65,536 or more. Rust's division
+/// truncates toward zero, so a signed value divides its magnitude and takes the signs back. Unsigned division by a
+/// power of two is a shift and a mask.
+fn long_division<T: Num>(value: Val<T>, divisor: i128, at: &Location) -> Option<(Val<T>, Val<T>)> {
+    if T::KIND != Kind::Int || !is_wide::<T>() {
+        return None;
+    }
+    if !value.has_bytes() {
+        let range = with_circuit(|circuit| circuit.range(value.wire()));
+        if range.is_finite() && range.max - range.min < 65_536.0 {
+            return None;
+        }
+    }
+    assert!(divisor != 0, "{at}: division by zero");
+    let magnitude = divisor.unsigned_abs();
+    if magnitude > wide::MAX_DIVISOR as u128 {
+        panic!("{at}: dividing a value of a wide type by {divisor} isn't supported; divisors up to 2^23 are");
+    }
+    let zero = Val::constant(T::from_f64(0.0));
+    if T::MIN >= 0.0 && magnitude.is_power_of_two() {
+        let bytes = wide::limbs_as::<T, T>(value);
+        let mask = wide::constant_limbs::<T>(magnitude as i128 - 1);
+        let shift = magnitude.trailing_zeros() as usize;
+        return Some((wide::shift(&bytes, shift, wide::Motion::Right), wide::bitwise(&bytes, &mask, 0.0)));
+    }
+    let negative = (T::MIN < 0.0).then(|| lt(value, zero));
+    let unsigned = match negative {
+        Some(negative) => Val::select_by(negative, value, zero - value),
+        None => value,
+    };
+    let (quotient, remainder) = wide::divide_bytes(&wide::limbs_as::<T, T>(unsigned), magnitude as u64);
+    let quotient: Val<T> = Val::from_limbs(quotient);
+    let remainder: Val<T> = with_circuit(|circuit| settle(circuit, remainder, 0.0, (magnitude - 1) as f64));
+    let Some(negative) = negative else { return Some((quotient, remainder)) };
+    let flipped = if divisor < 0 { not_bit(negative) } else { negative };
+    Some((Val::select_by(flipped, quotient, zero - quotient), Val::select_by(negative, remainder, zero - remainder)))
+}
+
 pub(crate) fn integer_table<T: Scalar>(value: Val<T>, at: &Location, f: impl Fn(i64) -> i64) -> Val<T> {
     const TABLE_LIMIT: f64 = 65_536.0;
     let range = with_circuit(|circuit| circuit.range(value.wire()));
@@ -313,6 +358,11 @@ impl<T: Num> Val<T> {
     #[track_caller]
     pub fn abs(self) -> Val<T> {
         let at = Location::caller();
+        if self.is_wide() {
+            // Wrapping like the bytes do: i32::MIN stays i32::MIN, where Rust panics.
+            let zero = Val::constant(T::from_f64(0.0));
+            return Val::select_by(lt(self, zero), self, zero - self);
+        }
         with_circuit(|circuit| {
             let positive = circuit.relu(self.wire());
             let negative = circuit.relu(-self.wire());

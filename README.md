@@ -267,9 +267,14 @@ without a cast. It keeps its bytes for bitwise operators and shifts, and the cir
 reads. Returning a value that may still leave ±2^24 fails the build with a message saying so. Plain `+`, `-` and `*`
 of one-wire values keep failing the build where their declared ranges may leave ±2^24, so a loose `#[range]` isn't
 silently turned into byte arithmetic, which costs far more; arithmetic on a value that came back from bytes goes back
-to bytes instead, e.g. `(h & 0xFFFF) * 0x10001`. The tests check u32, i32 and u64 arithmetic, bitwise operators,
-shifts by inputs up to 63, rotates, casts and narrowing against Rust (sampled over the full width, plus every carry
-boundary and the extremes), FNV-1a, and a 49-bit Connect Four bitboard; the GPU test runs a wide hash.
+to bytes instead, e.g. `(h & 0xFFFF) * 0x10001`. A signed value shifted right, e.g. `x >> 24` on an `i32`, gets one
+wire too. `/` and `%` by a constant are long division over the bytes, a byte at a time for divisors up to 65,536 and
+fewer bits at a time up to 2^23, truncating toward zero like Rust (a power of two divides an unsigned value with a
+shift and a mask), and so are one-wire values whose range is too wide for a table; the remainder, e.g. `h % 1000`,
+comes back as one wire. `abs` of a wide value compares it with 0 and negates where needed. The tests check u32, i32
+and u64 arithmetic, bitwise operators, shifts by inputs up to 63, rotates, casts, narrowing, division and `abs`
+against Rust (sampled over the full width, plus every carry boundary and the extremes), FNV-1a, and a 49-bit Connect
+Four bitboard; the GPU test runs a wide hash.
 
 See [Limitations](#limitations) for what isn't supported.
 
@@ -414,9 +419,9 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
-  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value, `saturating_*` and `abs` on one, and `f32` casts of values
-  that may leave ±2^24 aren't supported; each fails the build with a message. A wide value narrows again only where
-  its high bytes are known, so a signed one shifted right, e.g. `x >> 24` on an `i32`, stays bytes: cast it, `as i8`. `f32` parameters need `#[range]`s.
+  `wrapping_*` go beyond as bytes. Division and remainder of a wide value by a constant above 2^23, `saturating_*` on
+  one, and `f32` casts of values that may leave ±2^24 aren't supported; each fails the build with a message. `f32`
+  parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
   value (`for x in arr`), not with `.iter()`.
@@ -427,7 +432,8 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element, since
 every element may change; early `return`s chain into deep layer stacks (the search example has 127 layers), and
-integer division by a constant is a table read over the dividend's range (at most 65,536 entries). The search example
+integer division by a constant is a table read over the dividend's range (up to 65,536 entries; long division over
+bytes beyond that). The search example
 is still about 10x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is
 exactness, differentiability and a tensor-shaped program, not speed.
 

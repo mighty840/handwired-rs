@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `/` and `%` by a constant on wide values, and on one-wire values of wide types whose range is too wide for a table
+  (65,536 entries or more): long division over the bytes, a byte at a time for divisors up to 65,536 and fewer bits
+  at a time up to 2^23 (larger divisors fail the build), truncating toward zero like Rust; unsigned division by a
+  power of two is a shift and a mask. The remainder comes back as one wire. `abs` on wide values. Signed right shifts
+  of wide values, e.g. `x >> 24` on an `i32`, get one wire too.
 - Wide values narrow again: bytes whose high bytes are known 0s (or known 255s, for a negative value of a signed type),
   e.g. after `h >> 24` or `h & 0xFFFF`, also get one wire within ±2^24, so they can be returned, compared, cast to
   `f32` or used in plain arithmetic without a cast, and keep their bytes for bitwise operators and shifts; the form

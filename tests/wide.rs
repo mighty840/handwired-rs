@@ -285,17 +285,88 @@ fn saturating_on_wide_values_is_rejected() {
     saturating_wide_circuit();
 }
 
-/// `abs` of a wide value needs one wire, and says so.
+/// Division and remainder by constants and `abs` on wide values: byte digits for divisors up to 65,536, narrower digits
+/// above, powers of two as shifts and masks, signed values truncating toward zero; remainders and small quotients
+/// come back as one wire.
 #[handwired]
-fn abs_wide(a: u8) -> u8 {
-    let big = ((a as u32) << 24) as i32;
-    (big.abs() >> 24) as u8
+#[allow(clippy::type_complexity, clippy::needless_range_loop, clippy::cast_abs_to_unsigned)]
+fn dividing(a: [u8; 4], b: [u8; 8]) -> ([u8; 4], u32, [u8; 4], i32, u32, u32, [u8; 8], u32, [u8; 4], u32, i32) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    let y = x as i32;
+    let mut long = 0u64;
+    for i in 0..8 {
+        long |= (b[i] as u64) << (8 * i);
+    }
+    let tenth = x / 10;
+    let signed = (y / -7) as u32;
+    let magnitude = (y | 1).abs() as u32;
+    let quotient = long / 1_000_003;
+    let mut quotient_bytes = [0u8; 8];
+    for i in 0..8 {
+        quotient_bytes[i] = (quotient >> (8 * i)) as u8;
+    }
+    (
+        [tenth as u8, (tenth >> 8) as u8, (tenth >> 16) as u8, (tenth >> 24) as u8],
+        x % 1000,
+        [signed as u8, (signed >> 8) as u8, (signed >> 16) as u8, (signed >> 24) as u8],
+        y % 7,
+        x / 65_536,
+        x % 4096,
+        quotient_bytes,
+        (long % 999_983) as u32,
+        [magnitude as u8, (magnitude >> 8) as u8, (magnitude >> 16) as u8, (magnitude >> 24) as u8],
+        x / 5_000_000,
+        y >> 20,
+    )
 }
 
 #[test]
-#[should_panic(expected = "held as bytes")]
-fn abs_on_wide_values_is_rejected() {
-    abs_wide_circuit();
+fn division_remainder_and_abs_on_wide_values() {
+    let compiled = dividing_circuit();
+    println!(
+        "dividing: {} operations in {} layers",
+        compiled.program.live_operation_count(),
+        compiled.program.layers.len()
+    );
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let words = [
+        0u32,
+        1,
+        6,
+        7,
+        9,
+        10,
+        999,
+        1000,
+        0xFFFF,
+        0x1_0000,
+        4_999_999,
+        5_000_000,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0x8000_0001,
+        u32::MAX,
+    ];
+    let longs = [0u64, 1_000_002, 1_000_003, 999_983, u32::MAX as u64, 1 << 40, u64::MAX - 1, u64::MAX];
+    for &x in &words {
+        for &long in &longs {
+            let args = (x.to_le_bytes(), long.to_le_bytes());
+            assert_eq!(compiled.eval(&args).unwrap(), dividing(args.0, args.1), "{x:#x} {long:#x}");
+        }
+    }
+}
+
+/// A divisor beyond 2^23 is refused with a message.
+#[handwired]
+fn huge_divisor(a: [u8; 4]) -> u8 {
+    let x = (a[0] as u32) | (a[1] as u32) << 24;
+    (x / 10_000_000) as u8
+}
+
+#[test]
+#[should_panic(expected = "divisors up to 2^23")]
+fn divisors_beyond_two_to_the_23_are_rejected() {
+    huge_divisor_circuit();
 }
 
 /// Masks and shifts that bring a wide value back within ±2^24 give it one wire again: it is returned, compared, cast
@@ -335,5 +406,20 @@ fn values_back_within_range_narrow_again() {
             let args = (x.to_le_bytes(), s);
             assert_eq!(compiled.eval(&args).unwrap(), narrowed(args.0, s), "{x:#x} {s}");
         }
+    }
+}
+
+/// One-wire values whose ranges are too wide for a table divide by long division too.
+#[handwired]
+fn loose_division(#[range(0, 16_000_000)] a: u32, #[range(-9_000_000, 9_000_000)] b: i32) -> (u32, u32, i32, i32) {
+    (a / 3, a % 3, b / -1000, b % 1000)
+}
+
+#[test]
+fn loose_ranges_divide_by_long_division() {
+    let compiled = loose_division_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    for (a, b) in [(0, 0), (16_000_000, -9_000_000), (15_999_999, 9_000_000), (2, -999), (3, 1000), (1, -1001)] {
+        assert_eq!(compiled.eval(&(a, b)).unwrap(), loose_division(a, b), "{a} {b}");
     }
 }
