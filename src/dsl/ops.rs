@@ -273,11 +273,12 @@ fn divide_by_value<T: Num>(value: Val<T>, divisor: Val<T>, at: &Location, remain
     let value_negative = (signed && may_be_negative).then(|| lt(value, zero));
     let divisor_negative = (low < 0.0).then(|| lt(divisor, zero));
     let magnitude = match value_negative {
+        Some(negative) if !value.is_wide() => magnitude_of(value, negative),
         Some(negative) => Val::select_by(negative, value, zero - value),
         None => value,
     };
     let divisor_magnitude = match divisor_negative {
-        Some(negative) => Val::select_by(negative, divisor, zero - divisor),
+        Some(negative) => magnitude_of(divisor, negative),
         None => divisor,
     };
     let (d_min, d_max) = if low >= 0.0 {
@@ -291,10 +292,6 @@ fn divide_by_value<T: Num>(value: Val<T>, divisor: Val<T>, at: &Location, remain
     let bits: Vec<Val<bool>> = if magnitude.is_wide() {
         wide::bits_of(&wide::limbs_as::<T, T>(magnitude))
     } else {
-        if value_negative.is_some() {
-            let range = with_circuit(|circuit| circuit.range(value.wire()));
-            with_circuit(|circuit| settle::<T>(circuit, magnitude.wire(), 0.0, range.max.max(-range.min)));
-        }
         let split = super::bits::split(magnitude);
         (0..split.len()).map(|k| split.bit(k)).collect()
     };
@@ -330,6 +327,17 @@ fn divide_by_value<T: Num>(value: Val<T>, divisor: Val<T>, at: &Location, remain
         Some(flipped) => Val::select_by(flipped, quotient, zero - quotient),
         None => quotient,
     }
+}
+
+/// `|value|` for a one-wire value, as a wire with its whole range, e.g. 0..32768 for an `i16`: one past `i16::MAX`,
+/// which a select of `Val<T>`s would clamp to the type's range.
+fn magnitude_of<T: Num>(value: Val<T>, negative: Val<bool>) -> Val<T> {
+    with_circuit(|circuit| {
+        let range = circuit.range(value.wire());
+        let negated = circuit.affine(-value.wire());
+        let wire = circuit.select(negative.wire(), value.wire(), negated);
+        settle::<T>(circuit, wire, 0.0, range.max.max(-range.min))
+    })
 }
 
 /// `value / divisor` or `value % divisor` as one read of a table with every pair's result, for small ranges. Pairs

@@ -128,3 +128,19 @@ fn signed_wide_dividends_divide_by_values() {
         assert_eq!(compiled.eval(&(a, b)).unwrap(), signed_wide(a, b), "{x} / {b}");
     }
 }
+
+/// The full i16 range, whose minimum's magnitude doesn't fit an i16, by long division.
+#[handwired]
+fn full_i16(a: i16, #[range(-1000, 1000)] b: i16) -> (i16, i16) {
+    (a / b, a % b)
+}
+
+#[test]
+fn the_minimum_of_a_narrow_signed_type_divides() {
+    let compiled = full_i16_circuit();
+    let report = compiled.verify(5_000).unwrap();
+    assert!(report.checked > 4_000, "{report:?}");
+    for (a, b) in [(i16::MIN, 7), (i16::MIN, 1), (i16::MIN, -1000), (i16::MAX, -7), (i16::MIN, 1000)] {
+        assert_eq!(compiled.eval(&(a, b)).unwrap(), (a / b, a % b), "{a} / {b}");
+    }
+}
