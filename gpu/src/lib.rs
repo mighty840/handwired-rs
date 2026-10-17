@@ -109,7 +109,7 @@ pub struct GpuProgram {
     pub output_count: usize,
     /// Operations the shaders evaluate per record.
     pub operation_count: usize,
-    /// Cells per record that stages pass to later stages.
+    /// 32-bit words per record that stages pass to later stages.
     pub carried: usize,
     /// The WGSL of each stage, run in order.
     pub stages: Vec<String>,

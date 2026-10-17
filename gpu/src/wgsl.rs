@@ -31,7 +31,8 @@
 //! round-trips through memory unchanged, so the split doesn't change any
 //! result. Those loads and stores cost run time, mostly in proportion to the
 //! values that cross each cut, so larger stages run faster and compile
-//! slower.
+//! slower. An integer within a small range crosses as only the bits its range
+//! needs, packed with others into 32-bit words.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
@@ -84,7 +85,7 @@ pub struct Shader {
     pub stages: Vec<String>,
     /// Index-read tables whose candidates are all constants, concatenated.
     pub tables: Vec<f32>,
-    /// Cells per record that stages pass on to later stages.
+    /// Words per record that stages pass on to later stages: a value each, or 32 values of only 0 or 1.
     pub carried: usize,
     /// Statements across the stages, not counting loads and stores between them.
     pub statements: usize,
@@ -246,28 +247,30 @@ fn emit_with(program: &TensorProgram, whole: usize, stage: Option<usize>) -> Sha
     if writer.statements <= whole {
         return assemble(program, writer, operation_count);
     }
-    let cuts = cuts(&writer, stage.unwrap_or_else(|| stage_statements(writer.statements)));
+    let cuts = cuts(&writer, program, stage.unwrap_or_else(|| stage_statements(writer.statements)));
     let (writer, operation_count) = write(program, &cuts);
     assemble(program, writer, operation_count)
 }
 
 /// The rows to start stages at: each stage ends within half a stage of `budget` statements, at the row where the
 /// fewest values computed before it are read after it, since each of those is stored and loaded again.
-fn cuts(writer: &Writer, budget: usize) -> BTreeSet<usize> {
+fn cuts(writer: &Writer, program: &TensorProgram, budget: usize) -> BTreeSet<usize> {
     // Every stage holds at least one statement.
     let budget = budget.max(2);
     let rows = writer.row_statements.len();
-    let mut change = vec![0i64; rows + 2];
+    // Counted in words: a packed value is its bits' share of one.
+    let mut change = vec![0.0f64; rows + 2];
     for (position, &defined) in writer.defined_row.iter().enumerate() {
         let read = writer.read_row[position];
         if defined != usize::MAX && read > defined {
-            change[defined + 1] += 1;
-            change[read + 1] -= 1;
+            let weight = packing(program, position).map_or(1.0, |(_, width)| width as f64 / 32.0);
+            change[defined + 1] += weight;
+            change[read + 1] -= weight;
         }
     }
-    let live: Vec<i64> = change
+    let live: Vec<f64> = change
         .iter()
-        .scan(0, |running, &change| {
+        .scan(0.0, |running, &change| {
             *running += change;
             Some(*running)
         })
@@ -279,7 +282,7 @@ fn cuts(writer: &Writer, budget: usize) -> BTreeSet<usize> {
         let high = start.saturating_add(budget).saturating_add(budget / 2);
         let candidates = (first..rows).filter(|&row| (low..=high).contains(&writer.row_statements[row]));
         // Values passed on per statement of the stage: fewer crossings, spread over longer stages.
-        let cost = |row: usize| live[row] as f64 / (writer.row_statements[row] - start) as f64;
+        let cost = |row: usize| live[row] / (writer.row_statements[row] - start) as f64;
         let Some(row) = candidates.min_by(|&a, &b| cost(a).total_cmp(&cost(b)).then(b.cmp(&a))).or_else(|| {
             // A row longer than the window: cut at the first row past it.
             (first..rows).find(|&row| writer.row_statements[row] > high)
@@ -437,40 +440,105 @@ fn assemble(program: &TensorProgram, mut writer: Writer, operation_count: usize)
         writeln!(writer.stages[stage].outputs, "    outputs[record * {output_count}u + {index}u] = {value};").unwrap();
     }
 
-    // A carried value holds a slot from the end of the stage that computes it to the start of the last stage that
-    // reads it. A stage loads before it stores, so a slot freed by a stage's reads can take that stage's results.
-    let mut slots: BTreeMap<usize, usize> = BTreeMap::new();
+    // A carried value is stored at the end of the stage that computes it and loaded by the later stages that read
+    // it. An integer within a small range is `value - low` in as many bits as the range needs, e.g. 1 for a bit
+    // and 9 for a ReLU ramp of a byte's bits: each stage packs those it stores into 32-bit words, in the order they
+    // are last read, so words free early; any other value is a word of its own, its f32 bits. A word holds a slot
+    // from its stage's end to the start of the last stage that reads it; a stage loads before it stores, so a slot
+    // freed by its reads can take its results.
+    struct Carried {
+        made_in: usize,
+        released: usize,
+        /// Each member's position, and for packed words its shift, bit width and low end.
+        members: Vec<(usize, u32, u32, f64)>,
+        packed: bool,
+        slot: usize,
+    }
+    let mut items: Vec<Carried> = Vec::new();
+    let mut packed_by_stage: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for position in 0..program.value_count {
+        let made_in = writer.made_in[position];
+        let released = writer.last_read[position];
+        if made_in == usize::MAX || released <= made_in {
+            continue;
+        }
+        match packing(program, position) {
+            Some(_) => packed_by_stage.entry(made_in).or_default().push(position),
+            None => {
+                items.push(Carried { made_in, released, members: vec![(position, 0, 32, 0.0)], packed: false, slot: 0 })
+            }
+        }
+    }
+    for (made_in, mut positions) in packed_by_stage {
+        positions.sort_by_key(|&position| writer.last_read[position]);
+        let mut word: Vec<(usize, u32, u32, f64)> = Vec::new();
+        let mut used = 0;
+        let mut words = Vec::new();
+        for position in positions {
+            let (low, width) = packing(program, position).unwrap();
+            if used + width > 32 {
+                words.push(std::mem::take(&mut word));
+                used = 0;
+            }
+            word.push((position, used, width, low));
+            used += width;
+        }
+        words.push(word);
+        for members in words {
+            let released = members.iter().map(|&(position, ..)| writer.last_read[position]).max().unwrap();
+            items.push(Carried { made_in, released, members, packed: true, slot: 0 });
+        }
+    }
+    items.sort_by_key(|item| item.made_in);
     let mut busy: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
     let mut free: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
     let mut carried = 0;
-    for position in 0..program.value_count {
-        let made_in = writer.made_in[position];
-        if made_in == usize::MAX || writer.last_read[position] <= made_in {
-            continue;
-        }
+    // Where each carried position is: its item and its place in the item's members.
+    let mut places: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    for (index, item) in items.iter_mut().enumerate() {
         while let Some(&Reverse((released, slot))) = busy.peek() {
-            if released > made_in {
+            if released > item.made_in {
                 break;
             }
             busy.pop();
             free.push(Reverse(slot));
         }
-        let slot = match free.pop() {
+        item.slot = match free.pop() {
             Some(Reverse(slot)) => slot,
             None => {
                 carried += 1;
                 carried - 1
             }
         };
-        slots.insert(position, slot);
-        busy.push(Reverse((writer.last_read[position], slot)));
+        busy.push(Reverse((item.released, item.slot)));
+        for (member, &(position, ..)) in item.members.iter().enumerate() {
+            places.insert(position, (index, member));
+        }
     }
 
     let total = writer.stages.iter().map(|stage| stage.statements).sum();
     let mut stores: Vec<String> = vec![String::new(); writer.stages.len()];
-    for (&position, slot) in &slots {
-        writeln!(stores[writer.made_in[position]], "    carry[{slot}u * params.records + record] = v{position};")
-            .unwrap();
+    for item in &items {
+        let value = if item.packed {
+            let parts: Vec<String> = item
+                .members
+                .iter()
+                .filter(|&&(_, _, width, _)| width > 0)
+                .map(|&(position, shift, _, low)| {
+                    // An integer within ±2^24 minus another is exact, and so is its conversion to u32.
+                    let offset = if low == 0.0 {
+                        format!("v{position}")
+                    } else {
+                        format!("(v{position} - {})", wgsl_float(low as f32))
+                    };
+                    if shift == 0 { format!("u32({offset})") } else { format!("(u32({offset}) << {shift}u)") }
+                })
+                .collect();
+            if parts.is_empty() { "0u".to_string() } else { parts.join(" | ") }
+        } else {
+            format!("bitcast<u32>(v{})", item.members[0].0)
+        };
+        writeln!(stores[item.made_in], "    carry[{}u * params.records + record] = {value};", item.slot).unwrap();
     }
     let stages = writer
         .stages
@@ -481,9 +549,27 @@ fn assemble(program: &TensorProgram, mut writer: Writer, operation_count: usize)
             for position in &stage.sources {
                 writeln!(prologue, "    let s{position}: f32 = source[base + {position}u];").unwrap();
             }
+            let mut words = BTreeSet::new();
             for position in &stage.loads {
-                writeln!(prologue, "    let v{position}: f32 = carry[{}u * params.records + record];", slots[position])
-                    .unwrap();
+                let (index, member) = places[position];
+                let item = &items[index];
+                let load = format!("carry[{}u * params.records + record]", item.slot);
+                if !item.packed {
+                    writeln!(prologue, "    let v{position}: f32 = bitcast<f32>({load});").unwrap();
+                    continue;
+                }
+                let (_, shift, width, low) = item.members[member];
+                let value = if width == 0 {
+                    wgsl_float(low as f32)
+                } else {
+                    if words.insert(index) {
+                        writeln!(prologue, "    let w{index}: u32 = {load};").unwrap();
+                    }
+                    let mask = (1u64 << width) - 1;
+                    let bits = format!("f32((w{index} >> {shift}u) & {mask}u)");
+                    if low == 0.0 { bits } else { format!("({bits} + {})", wgsl_float(low as f32)) }
+                };
+                writeln!(prologue, "    let v{position}: f32 = {value};").unwrap();
             }
             format!(
                 "struct Params {{
@@ -496,7 +582,7 @@ fn assemble(program: &TensorProgram, mut writer: Writer, operation_count: usize)
 @group(0) @binding(1) var<storage, read> source: array<f32>;
 @group(0) @binding(2) var<storage, read> tables: array<f32>;
 @group(0) @binding(3) var<storage, read_write> outputs: array<f32>;
-@group(0) @binding(4) var<storage, read_write> carry: array<f32>;
+@group(0) @binding(4) var<storage, read_write> carry: array<u32>;
 
 // max(x, lowest) is x for every finite x, but the compiler can't prove it,
 // so it keeps products and sums from being fused or regrouped across it.
@@ -519,6 +605,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
         })
         .collect();
     Shader { stages, tables: writer.tables, carried, statements: total, source_size, output_count, operation_count }
+}
+
+/// How a carried value packs, as its low end and bit width: where the circuit holds it to integers within a range of
+/// at most 2^24 values, inside ±2^24.
+fn packing(program: &TensorProgram, position: usize) -> Option<(f64, u32)> {
+    let range = program.ranges[position];
+    let integer = program.grids[position].is_some_and(|grid| grid >= 1.0 && grid.fract() == 0.0);
+    if !integer || !(range.min >= -16_777_216.0 && range.max <= 16_777_216.0) {
+        return None;
+    }
+    let (low, high) = (range.min.ceil(), range.max.floor());
+    let span = (high - low).max(0.0) as u64;
+    let width = 64 - span.leading_zeros();
+    (width <= 24).then_some((low, width))
 }
 
 fn packed_position(program: &TensorProgram, wire: Wire) -> usize {

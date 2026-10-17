@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::Error;
 use crate::circuit::{Circuit, OpKind, OutOfRange, resolve_index_position};
 use crate::gather::{GatherPlan, plan_gather_lowering};
-use crate::numeric::{evaluate_boolean, relu32};
+use crate::numeric::{Range, evaluate_boolean, relu32};
 use crate::wire::Wire;
 
 #[derive(Clone, Debug)]
@@ -93,6 +93,9 @@ pub struct TensorProgram {
     pub width: usize,
     /// One slot per one-hot group that gather reads use.
     pub gather_slot_count: usize,
+    /// Each packed position's range and grid in the circuit, which hold wherever its assumptions do.
+    pub ranges: Vec<Range>,
+    pub grids: Vec<Option<f64>>,
 }
 
 impl TensorProgram {
@@ -288,7 +291,11 @@ impl Circuit {
             });
             available += output_size;
         }
+        let ranges = wire_order.iter().map(|&wire| self.range(wire)).collect();
+        let grids = wire_order.iter().map(|&wire| self.grid(wire)).collect();
         TensorProgram {
+            ranges,
+            grids,
             layers,
             roots,
             source_size,

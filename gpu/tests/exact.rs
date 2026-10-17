@@ -554,6 +554,8 @@ fn bitwise_and_enum_batches_match_the_function() {
     let Some(gpu) = gpu() else { return };
     let compiled = scramble_circuit();
     let batches = [GpuBatch::new(&gpu, &compiled).unwrap(), GpuBatch::staged(&gpu, &compiled, SPLIT).unwrap()];
+    // Bits pass between the split stages packed into words.
+    assert!(batches[1].program.stages.iter().any(|stage| stage.contains("u) & 1u)")));
     let mut rng = Rng(9);
     let modes = [Mode::Mix, Mode::Mask, Mode::Shift];
     let records: Vec<(u16, u8, u8, Mode)> = (0..65_536u32)

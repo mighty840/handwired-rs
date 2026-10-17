@@ -288,7 +288,9 @@ code (on RADV: 0.1 s for 1,200 statements, 6 s for 4,900, 17–27 s for 8,400 de
 2,000 statements is one shader, and a longer one is split into stages that compile in parallel and run one after
 another: 1,000 statements each up to 20,000, then fewer with the square root of the length, down to 250 from 320,000.
 Each cut goes where few values cross it; the values later stages read go through a storage buffer, which costs run
-time in proportion to how many cross. On RADV, that 8,400-statement program, a 1,131-operation wide hash, becomes 6
+time in proportion to how many cross, and an integer within a small range crosses as only the bits its range needs,
+packed into 32-bit words with others (roughly 30% faster for the wide hash below, 20% for a bit-heavy XOR, whose ReLU
+ramps mostly have ranges too loose to pack). On RADV, that 8,400-statement program, a 1,131-operation wide hash, becomes 6
 stages that set up in 0.47 s and run 262,144 records in about 62 ms, against 32 ms as one shader (in stages of 250:
 0.09 s and 120 ms). SHA-1 (68,036 operations, about 460,000 statements, [below](#two-larger-examples)) becomes 1,240
 stages of about 250 that set up in 8–17 s depending on load, and hashes the 2,000 messages in 0.3–0.5 s, measured
