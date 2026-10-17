@@ -192,7 +192,7 @@ fn join_byte(bits: &[Val<bool>]) -> Wire {
 }
 
 /// The 8 bits of each byte, least significant first.
-fn bits_of(limbs: &Limbs) -> Vec<Val<bool>> {
+pub(super) fn bits_of(limbs: &Limbs) -> Vec<Val<bool>> {
     let mut bits = Vec::with_capacity(8 * limbs.count);
     for &wire in limbs.wires() {
         let split = split(Val::<u8>::from_wire(wire));
@@ -201,7 +201,7 @@ fn bits_of(limbs: &Limbs) -> Vec<Val<bool>> {
     bits
 }
 
-fn join_bits(bits: &[Val<bool>]) -> Limbs {
+pub(super) fn join_bits(bits: &[Val<bool>]) -> Limbs {
     let wires: Vec<Wire> = bits.chunks(8).map(join_byte).collect();
     Limbs::new(&wires)
 }
@@ -563,6 +563,58 @@ pub(super) fn divide_bytes(a: &Limbs, divisor: u64) -> (Limbs, Wire) {
         top = low;
     }
     (join_bits(&quotient), remainder.unwrap())
+}
+
+// ---- Division by a value ----------------------------------------------------------------------------------------
+
+/// `a / divisor` and `a % divisor` for an unsigned dividend given by its bits, least significant first, and a divisor
+/// wire within 0..=`MAX_DIVISOR`, by long division one bit at a time: each step doubles the remainder, adds the next
+/// bit, and takes the divisor off where it fits. Steps whose remainder can't reach the divisor's smallest value are
+/// known zeros and cost nothing. Returns the quotient's bits and the remainder.
+pub(super) fn divide_by_wire(bits: &[Val<bool>], divisor: Wire) -> (Vec<Val<bool>>, Wire) {
+    let range = with_circuit(|circuit| circuit.range(divisor));
+    let (d_min, d_max) = (range.min.max(0.0), range.max);
+    assert!(d_max <= MAX_DIVISOR as f64);
+    let mut quotient = vec![Val::<bool>::constant(false); bits.len()];
+    let mut rest = Lin::new(vec![], 0.0);
+    // The largest the remainder can be so far: the value read so far, until that reaches the divisor.
+    let mut largest = 0.0;
+    for k in (0..bits.len()).rev() {
+        let bit = bits[k];
+        with_circuit(|circuit| {
+            rest = rest.clone() * 2.0;
+            match circuit.constant_value(bit.wire()) {
+                Some(value) => rest.bias += value,
+                None => rest.terms.push((bit.wire(), 1.0)),
+            }
+            let may_be_set = circuit.constant_value(bit.wire()).is_none_or(|value| value != 0.0);
+            largest = 2.0 * largest + if may_be_set { 1.0 } else { 0.0 };
+            if largest < d_min {
+                return;
+            }
+            let fits = integer_step(circuit, &(rest.clone() - divisor), 0.0, false);
+            let taken = circuit.multiply(fits.wire(), divisor);
+            let remainder = circuit.round_affine(rest.clone() - taken);
+            largest = largest.min((d_max - 1.0).max(0.0));
+            circuit.assume_range_allowing_readers(remainder, 0.0, largest);
+            circuit.assume_grid_allowing_readers(remainder, 1.0);
+            rest = Lin::from(remainder);
+            quotient[k] = fits;
+        });
+    }
+    let remainder = with_circuit(|circuit| {
+        if rest.terms.is_empty() {
+            constant(circuit, rest.bias)
+        } else if rest.terms.len() == 1 && rest.terms[0].1 == 1.0 && rest.bias == 0.0 {
+            rest.terms[0].0
+        } else {
+            let wire = circuit.round_affine(rest);
+            circuit.assume_range_allowing_readers(wire, 0.0, largest);
+            circuit.assume_grid_allowing_readers(wire, 1.0);
+            wire
+        }
+    });
+    (quotient, remainder)
 }
 
 // ---- Casts, selects and reads ---------------------------------------------------------------------------------------

@@ -75,7 +75,8 @@ inputs where the oracle panics; run it with overflow checks on (e.g. a debug bui
 
 **Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12) and `#[derive(HwType)]`
 structs as parameters (up to 16), results and locals;
-`+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant (as a table read); f32 `/` by a power of two;
+`+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant or an input value, see
+[Division](#division); f32 `/` by a power of two;
 integer `& | ^ !`, `<<` and `>>` by a constant or an input value (wrapping like Rust) and `count_ones()`, see
 [Bitwise operators](#bitwise-operators);
 `min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
@@ -276,6 +277,18 @@ and u64 arithmetic, bitwise operators, shifts by inputs up to 63, rotates, casts
 against Rust (sampled over the full width, plus every carry boundary and the extremes), FNV-1a, and a 49-bit Connect
 Four bitboard; the GPU test runs a wide hash.
 
+### Division
+
+Integer `/` and `%` (and `/=`, `%=`) truncate toward zero like Rust. By a constant, they read a table of results over
+the dividend's range, up to 65,536 entries (long division over bytes beyond that, see above). By a value that depends
+on the inputs, small ranges read one table of every pair's result, e.g. `pot / players` with `pot` in 0..200 and
+`players` in 1..6 reads 1,206 entries in 2 layers. Otherwise it's long division over the dividend's bits: one
+comparison step per bit, which takes the divisor off the running remainder where it fits, on magnitudes with the
+signs put back after. A u32 in 0..60,000 divided by a value in 1..300 is 125 operations in 65 layers. Steps where the
+remainder can't reach the smallest divisor yet cost nothing. The divisor stays within ±2^23 (larger ranges fail the
+build), and the dividend may be a wide value of any width. Dividing by zero panics in Rust, so the circuit's result
+there is unspecified and `verify` skips those inputs.
+
 See [Limitations](#limitations) for what isn't supported.
 
 ## GPU: `handwired-rs-gpu`
@@ -417,12 +430,12 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 
 **The `#[handwired]` subset.**
 - Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value,
-  division or remainder by an input value, enums whose variants carry data,
+  enums whose variants carry data,
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
-  `wrapping_*` go beyond as bytes. Division and remainder of a wide value by a constant above 2^23, `saturating_*` on
-  one, and `f32` casts of values that may leave ±2^24 aren't supported; each fails the build with a message. `f32`
+  `wrapping_*` go beyond as bytes. Divisors that may exceed 2^23 in magnitude, `saturating_*` on a wide value, and
+  `f32` casts of values that may leave ±2^24 aren't supported; each fails the build with a message. `f32`
   parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
@@ -435,7 +448,7 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 **Cost.** A circuit evaluates every path. Array writes at input-dependent indices cost one select per element, since
 every element may change; early `return`s chain into deep layer stacks (the search example has 127 layers), and
 integer division by a constant is a table read over the dividend's range (up to 65,536 entries; long division over
-bytes beyond that). The search example
+bytes beyond that), and division by an input value a table over both ranges or one comparison step per dividend bit. The search example
 is still about 10x slower than plain Rust on 12 CPU threads, 20x on the GPU and 24x on one thread: the point is
 exactness, differentiability and a tensor-shaped program, not speed.
 

@@ -33,6 +33,11 @@ impl Bits {
     pub(super) fn bit(&self, k: usize) -> Val<bool> {
         self.low.get(k).copied().unwrap_or(self.sign)
     }
+
+    /// How many bits lie below the sign.
+    pub(super) fn len(&self) -> usize {
+        self.low.len()
+    }
 }
 
 fn constant_bit(value: bool) -> Val<bool> {

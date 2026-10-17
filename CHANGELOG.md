@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `/` and `%` by a value that depends on the inputs: one table read of every pair's result where the two ranges have
+  65,536 pairs or fewer, else long division over the dividend's bits, one comparison step per bit, for divisors within
+  ±2^23 and dividends of any width, signed or not. `10 / x` and `10 % x` with a literal on the left work too.
+- Fixed: `x op= a op b` applied `op` to `x op a` and then `b`, e.g. `score -= a - b` computed `score - a - b`, and
+  f32 `y += f + g` rounded as `(y + f) + g`. The right side is now grouped as in Rust. Circuits for such statements
+  change (`+=` of a sum of integers compiles as before).
+
 ## 0.7.0 (2026-10-17): handwired-rs and handwired-rs-gpu 0.7.0
 
 - GPU stages pass integers within small ranges as only the bits their ranges need, packed into 32-bit words (the

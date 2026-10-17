@@ -744,7 +744,7 @@ impl Rewriter {
             // x op= y becomes x = x op y; the left side reads the current value.
             let current = self.expr(&binary.left, true, None);
             let right = self.expr(&binary.right, true, None);
-            let combined = quote_spanned!(span=> #current #operator #right);
+            let combined = quote_spanned!(span=> #current #operator (#right));
             return self.assign(&binary.left, combined);
         }
         let left = self.expr(&binary.left, true, None);

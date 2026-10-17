@@ -239,3 +239,29 @@ fn broadcast_rewrites_one_argument_of_every_encoded_record() {
     }));
     assert!(wrong.is_err());
 }
+
+/// `x op= a op b` applies the whole right side: `score - (a - b)`, and f32 `y + (f + g)` in Rust's rounding order.
+#[handwired]
+fn grouped(
+    #[range(0, 100)] a: i32,
+    #[range(0, 100)] b: i32,
+    #[range(-1.0, 1.0)] f: f32,
+    #[range(-1.0, 1.0)] g: f32,
+) -> (i32, f32) {
+    let mut score = 10;
+    score -= a - b;
+    score *= 2 + b;
+    let mut y = 1.0f32;
+    y += f + g;
+    (score, y)
+}
+
+#[test]
+fn compound_assignments_group_their_right_side() {
+    let compiled = grouped_circuit();
+    assert_eq!(compiled.verify(5_000).unwrap().skipped, 0);
+    let tiny = f32::EPSILON / 2.0;
+    // (1 + tiny) + tiny rounds back to 1 twice; 1 + (tiny + tiny) doesn't.
+    assert_eq!(compiled.eval(&(30, 4, tiny, tiny)).unwrap(), grouped(30, 4, tiny, tiny));
+    assert_eq!(grouped(30, 4, tiny, tiny), (-96, 1.0 + f32::EPSILON));
+}

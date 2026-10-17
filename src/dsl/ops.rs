@@ -223,16 +223,143 @@ impl<T: Num> Rem<T> for Val<T> {
 impl<T: Num> Div for Val<T> {
     type Output = Val<T>;
     #[track_caller]
-    fn div(self, _: Val<T>) -> Val<T> {
-        panic!("{}: division by a value that depends on the inputs isn't supported yet", Location::caller())
+    fn div(self, right: Val<T>) -> Val<T> {
+        divide_by_value(self, right, Location::caller(), false)
     }
 }
 impl<T: Num> Rem for Val<T> {
     type Output = Val<T>;
     #[track_caller]
-    fn rem(self, _: Val<T>) -> Val<T> {
-        panic!("{}: remainder by a value that depends on the inputs isn't supported yet", Location::caller())
+    fn rem(self, right: Val<T>) -> Val<T> {
+        divide_by_value(self, right, Location::caller(), true)
     }
+}
+
+/// `value / divisor`, or `value % divisor` when `remainder` is set, for a divisor that depends on the inputs. Small
+/// ranges read a table of every pair's result; otherwise long division over the dividend's bits, one comparison step
+/// per quotient bit, on magnitudes with the signs taken back after, like Rust's division toward zero. Division by
+/// zero panics in Rust, so its result here is unspecified.
+fn divide_by_value<T: Num>(value: Val<T>, divisor: Val<T>, at: &Location, remainder: bool) -> Val<T> {
+    if T::KIND == Kind::Float {
+        panic!("{at}: f32 division is only supported by a power of two, not by a value that depends on the inputs");
+    }
+    if divisor.is_wide() {
+        panic!("{at}: this {} divisor may leave ±2^24; divisors up to 2^23 are supported", T::NAME);
+    }
+    let range = with_circuit(|circuit| circuit.range(divisor.wire()));
+    if let Some(constant) = with_circuit(|circuit| circuit.constant_value(divisor.wire())) {
+        let constant = T::from_f64(constant);
+        return if remainder { value % constant } else { value / constant };
+    }
+    let (low, high) = (range.min.ceil(), range.max.floor());
+    let largest = high.max(-low);
+    if largest.is_nan() || largest > wide::MAX_DIVISOR as f64 {
+        panic!("{at}: this {} divisor may reach {low}..{high}; divisors up to 2^23 are supported", T::NAME);
+    }
+    let zero = Val::constant(T::from_f64(0.0));
+    if low == 0.0 && high == 0.0 {
+        // Always a division by zero.
+        return zero;
+    }
+    if !value.is_wide() {
+        let dividend = with_circuit(|circuit| circuit.range(value.wire()));
+        let (first, last) = (dividend.min.ceil(), dividend.max.floor());
+        if dividend.is_finite() && (last - first + 1.0) * (high - low + 1.0) <= 65_536.0 {
+            return pair_table(value, divisor, (first as i64, last as i64), (low as i64, high as i64), at, remainder);
+        }
+    }
+    let signed = T::MIN < 0.0;
+    let may_be_negative = value.has_bytes() || with_circuit(|circuit| circuit.range(value.wire()).min < 0.0);
+    let value_negative = (signed && may_be_negative).then(|| lt(value, zero));
+    let divisor_negative = (low < 0.0).then(|| lt(divisor, zero));
+    let magnitude = match value_negative {
+        Some(negative) => Val::select_by(negative, value, zero - value),
+        None => value,
+    };
+    let divisor_magnitude = match divisor_negative {
+        Some(negative) => Val::select_by(negative, divisor, zero - divisor),
+        None => divisor,
+    };
+    let (d_min, d_max) = if low >= 0.0 {
+        (low, high)
+    } else if high <= 0.0 {
+        (-high, -low)
+    } else {
+        (0.0, largest)
+    };
+    with_circuit(|circuit| settle::<T>(circuit, divisor_magnitude.wire(), d_min, d_max));
+    let bits: Vec<Val<bool>> = if magnitude.is_wide() {
+        wide::bits_of(&wide::limbs_as::<T, T>(magnitude))
+    } else {
+        if value_negative.is_some() {
+            let range = with_circuit(|circuit| circuit.range(value.wire()));
+            with_circuit(|circuit| settle::<T>(circuit, magnitude.wire(), 0.0, range.max.max(-range.min)));
+        }
+        let split = super::bits::split(magnitude);
+        (0..split.len()).map(|k| split.bit(k)).collect()
+    };
+    let (quotient_bits, remainder_wire) = wide::divide_by_wire(&bits, divisor_magnitude.wire());
+    if remainder {
+        let result: Val<T> = Val::from_wire(remainder_wire);
+        return match value_negative {
+            Some(negative) => Val::select_by(negative, result, zero - result),
+            None => result,
+        };
+    }
+    let quotient: Val<T> = if magnitude.is_wide() {
+        Val::from_limbs(wide::join_bits(&quotient_bits))
+    } else {
+        with_circuit(|circuit| {
+            let mut form = Lin::new(vec![], 0.0);
+            for (k, bit) in quotient_bits.iter().enumerate() {
+                match circuit.constant_value(bit.wire()) {
+                    Some(value) => form.bias += value * (1u64 << k) as f64,
+                    None => form.terms.push((bit.wire(), (1u64 << k) as f64)),
+                }
+            }
+            let wire = circuit.affine(form);
+            number(circuit, wire, at)
+        })
+    };
+    let flipped = match (value_negative, divisor_negative) {
+        (Some(left), Some(right)) => Some(ne(left, right)),
+        (Some(negative), None) | (None, Some(negative)) => Some(negative),
+        (None, None) => None,
+    };
+    match flipped {
+        Some(flipped) => Val::select_by(flipped, quotient, zero - quotient),
+        None => quotient,
+    }
+}
+
+/// `value / divisor` or `value % divisor` as one read of a table with every pair's result, for small ranges. Pairs
+/// where Rust panics, dividing by zero or overflowing, read 0.
+fn pair_table<T: Num>(
+    value: Val<T>,
+    divisor: Val<T>,
+    (first, last): (i64, i64),
+    (low, high): (i64, i64),
+    at: &Location,
+    remainder: bool,
+) -> Val<T> {
+    let mut results = Vec::new();
+    for a in first..=last {
+        for d in low..=high {
+            let result = match (d, remainder) {
+                (0, _) => 0,
+                (_, false) => a / d,
+                (_, true) => a % d,
+            };
+            results.push(if (T::MIN..=T::MAX).contains(&(result as f64)) { result } else { 0 });
+        }
+    }
+    with_circuit(|circuit| {
+        let table: Vec<Wire> = results.iter().map(|&result| circuit.constant(result as f64)).collect();
+        let index = (value.wire() - first as f64) * (high - low + 1) as f64 + (divisor.wire() - low as f64);
+        let read = circuit.index_read_affine(index, &table, OutOfRange::Clamp, OutOfRange::Clamp, None);
+        circuit.assume_grid_allowing_readers(read, 1.0);
+        number(circuit, read, at)
+    })
 }
 
 /// Any integer function of one integer with few possible inputs, as one
@@ -321,8 +448,14 @@ macro_rules! native_left_arithmetic {
             type Output = Val<$t>;
             #[track_caller]
             fn div(self, right: Val<$t>) -> Val<$t> {
-                let _ = right;
-                panic!("{}: division by a value that depends on the inputs isn't supported yet", Location::caller())
+                Val::constant(self) / right
+            }
+        }
+        impl Rem<Val<$t>> for $t {
+            type Output = Val<$t>;
+            #[track_caller]
+            fn rem(self, right: Val<$t>) -> Val<$t> {
+                Val::constant(self) % right
             }
         }
     )*};
