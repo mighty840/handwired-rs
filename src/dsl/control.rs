@@ -3,7 +3,7 @@
 use std::panic::Location;
 
 use super::ops::integer_table;
-use super::{IntScalar, Kind, Scalar, Val, eq, gt, is_wide, known_bit, settle, wide, with_circuit};
+use super::{HwType, IntScalar, Kind, Scalar, Val, eq, gt, is_wide, known_bit, settle, wide, with_circuit};
 use crate::circuit::OutOfRange;
 use crate::emit::{Relation, emit_compare, emit_round};
 use crate::wire::{Lin, Wire};
@@ -163,6 +163,22 @@ impl<L: Lift, const N: usize> Lift for [L; N] {
     }
 }
 
+/// The Rust type a circuit value stands for, e.g. `u8` for `Val<u8>`: what `Some(value)` wraps when nothing else
+/// says.
+pub trait Native {
+    type Of: HwType<Val = Self>;
+}
+
+impl<T: Scalar + HwType<Val = Val<T>>> Native for Val<T> {
+    type Of = T;
+}
+impl Native for () {
+    type Of = ();
+}
+impl<V: Native, const N: usize> Native for [V; N] {
+    type Of = [V::Of; N];
+}
+
 /// The common type of an `if`'s two branch values: native when both are
 /// native, a circuit value when either is.
 pub trait Unify<B>: Sized {
@@ -241,6 +257,9 @@ native_conversions!(bool, u8, u16, u32, u64, usize, i8, i16, i32, i64, f32);
 
 macro_rules! tuple_traits {
     ($(($($name:ident $other:ident $index:tt),+)),*) => {$(
+        impl<$($name: Native),+> Native for ($($name,)+) {
+            type Of = ($($name::Of,)+);
+        }
         impl<$($name: Placeholder),+> Placeholder for ($($name,)+) {
             fn placeholder() -> Self {
                 ($($name::placeholder(),)+)

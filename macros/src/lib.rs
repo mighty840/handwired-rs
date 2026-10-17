@@ -39,6 +39,10 @@ mod loops;
 /// On an enum whose variants carry no data it makes the enum a scalar, its discriminant in one cell, for `match`,
 /// `matches!`, `if let`, `==` and `as` in `#[handwired]` code. The enum needs `Clone`, `Copy`, `Debug` and
 /// `PartialEq`, plus `PartialOrd` for `<` and friends.
+///
+/// On an enum whose variants carry data it adds `<Name>Hw`: the variant's index in one cell, then every variant's
+/// fields, which hold 0 where the value is another variant. `#[handwired]` code builds it with `Name::Variant(..)` and
+/// `Name::Variant { .. }`, and matches it with patterns that bind the fields.
 #[proc_macro_derive(HwType, attributes(range, ranges, grid))]
 pub fn derive_hw_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -214,7 +218,7 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         if param.range.is_some() && param.ranges.is_some() {
             return syn::Error::new(param.name.span(), "use either #[range] or #[ranges], not both").to_compile_error();
         }
-        quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid, ranges: #ranges })
+        quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid, ranges: #ranges, holds_zero: false })
     });
     let declarations = params.iter().enumerate().map(|(index, param)| {
         let (name, ty) = (&param.name, &param.ty);
@@ -547,6 +551,20 @@ impl Rewriter {
             Expr::Call(call) => {
                 let args: Vec<Tokens> = call.args.iter().map(|arg| self.expr(arg, true, None)).collect();
                 match &*call.func {
+                    // `Shape::Rect(w, h)` or `Some(x)`: a variant with its fields.
+                    Expr::Path(path)
+                        if path.qself.is_none()
+                            && path.path.segments.last().is_some_and(|last| {
+                                last.ident.to_string().starts_with(|first: char| first.is_ascii_uppercase())
+                            }) =>
+                    {
+                        let fields: Vec<(syn::Member, Tokens)> = args
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, arg)| (syn::Member::Unnamed(syn::Index::from(index)), arg))
+                            .collect();
+                        self.variant(&path.path, fields, expected, span)
+                    }
                     // A call to another #[handwired] function goes to its circuit form.
                     Expr::Path(path)
                         if path.qself.is_none()
@@ -697,6 +715,25 @@ impl Rewriter {
                 if structure.qself.is_some() {
                     return self.error(span, "qualified struct paths aren't supported in #[handwired] functions");
                 }
+                let segments = &structure.path.segments;
+                if segments.len() >= 2
+                    && segments[segments.len() - 2]
+                        .ident
+                        .to_string()
+                        .starts_with(|first: char| first.is_ascii_uppercase())
+                {
+                    // `Shape::Circle { r }`: a variant with named fields.
+                    if structure.rest.is_some() {
+                        return self
+                            .error(span, "`..` isn't supported in a variant's fields in #[handwired] functions");
+                    }
+                    let fields: Vec<(syn::Member, Tokens)> = structure
+                        .fields
+                        .iter()
+                        .map(|field| (field.member.clone(), self.expr(&field.expr, true, None)))
+                        .collect();
+                    return self.variant(&structure.path, fields, expected, span);
+                }
                 let mut path = structure.path.clone();
                 let last = path.segments.last_mut().unwrap();
                 last.ident = format_ident!("{}Hw", last.ident);
@@ -717,6 +754,60 @@ impl Rewriter {
             }
             _ => self.error(span, "this expression isn't supported in #[handwired] functions"),
         }
+    }
+
+    /// A variant of an enum that carries data, from its path and its rewritten fields: the circuit form's value with
+    /// the variant's tag, each field set, and the other variants' fields 0. `Some(x)` takes its type from where it
+    /// goes when that's known, else from `x`.
+    fn variant(
+        &mut self,
+        path: &syn::Path,
+        fields: Vec<(syn::Member, Tokens)>,
+        expected: Option<&Type>,
+        span: Span,
+    ) -> Tokens {
+        let last = path.segments.last().unwrap();
+        let variant = &last.ident;
+        let enum_path = match variant.to_string().as_str() {
+            "Some" => match expected {
+                Some(ty) => quote!(#ty),
+                None if fields.len() == 1 => {
+                    let value = &fields[0].1;
+                    return quote_spanned!(span=> ::handwired_rs::dsl::some(::handwired_rs::dsl::Lift::lift(#value)));
+                }
+                None => return self.error(span, "`Some` takes one value"),
+            },
+            "Ok" | "Err" => return self.error(span, "`Result` isn't supported in #[handwired] functions yet"),
+            _ if path.segments.len() < 2 => {
+                return self.error(
+                    span,
+                    "name a variant with data by its enum in #[handwired] functions, e.g. `Shape::Rect(w, h)`, or this \
+                     is a tuple struct, which isn't supported",
+                );
+            }
+            _ => {
+                let mut enum_path = path.clone();
+                enum_path.segments.pop();
+                let enum_path =
+                    enum_path.segments.into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>();
+                let leading = &path.leading_colon;
+                quote!(#leading #enum_path)
+            }
+        };
+        let value = self.fresh("variant");
+        let new = format_ident!("__hw_new_{}", variant);
+        let assignments = fields.iter().map(|(member, field)| {
+            let name = match member {
+                syn::Member::Named(name) => format_ident!("__{}__{}", variant, name),
+                syn::Member::Unnamed(index) => format_ident!("__{}__{}", variant, index.index),
+            };
+            quote_spanned!(span=> #value.#name = ::handwired_rs::dsl::Conv::conv(#field);)
+        });
+        quote_spanned!(span=> {
+            let mut #value = <<#enum_path as ::handwired_rs::dsl::HwType>::Val>::#new();
+            #(#assignments)*
+            #value
+        })
     }
 
     fn binary(&mut self, binary: &syn::ExprBinary) -> Tokens {
@@ -1045,6 +1136,44 @@ fn pattern_condition(pattern: &Pat, subject: &Expr, bindings: &mut Vec<Stmt>) ->
                 let index = syn::Index::from(index);
                 let element_subject: Expr = parse_quote!(#subject.#index);
                 let next = pattern_condition(element, &element_subject, bindings)?;
+                condition = parse_quote!((#condition) && (#next));
+            }
+            condition
+        }
+        Pat::TupleStruct(tuple) => {
+            // `Shape::Rect(w, _)` or `Some(x)`: the variant's tag, then each field's own pattern.
+            let variant = &tuple.path.segments.last().unwrap().ident;
+            let is = format_ident!("__hw_is_{}", variant);
+            let mut condition: Expr = parse_quote!(::handwired_rs::dsl::Lift::lift(#subject).#is());
+            for (index, element) in tuple.elems.iter().enumerate() {
+                if let Pat::Rest(rest) = element {
+                    if index + 1 != tuple.elems.len() {
+                        return Err(syn::Error::new(rest.span(), "`..` is only supported last in a variant's fields"));
+                    }
+                    break;
+                }
+                let field = format_ident!("__{}__{}", variant, index);
+                let element_subject: Expr = parse_quote!(::handwired_rs::dsl::Lift::lift(#subject).#field);
+                let next = pattern_condition(element, &element_subject, bindings)?;
+                condition = parse_quote!((#condition) && (#next));
+            }
+            condition
+        }
+        Pat::Struct(structure) => {
+            // `Shape::Circle { r, .. }`: the variant's tag, then each named field's pattern.
+            if structure.qself.is_some() {
+                return Err(syn::Error::new(structure.span(), "qualified paths aren't supported in patterns"));
+            }
+            let variant = &structure.path.segments.last().unwrap().ident;
+            let is = format_ident!("__hw_is_{}", variant);
+            let mut condition: Expr = parse_quote!(::handwired_rs::dsl::Lift::lift(#subject).#is());
+            for field in &structure.fields {
+                let name = match &field.member {
+                    syn::Member::Named(name) => format_ident!("__{}__{}", variant, name),
+                    syn::Member::Unnamed(index) => format_ident!("__{}__{}", variant, index.index),
+                };
+                let field_subject: Expr = parse_quote!(::handwired_rs::dsl::Lift::lift(#subject).#name);
+                let next = pattern_condition(&field.pat, &field_subject, bindings)?;
                 condition = parse_quote!((#condition) && (#next));
             }
             condition

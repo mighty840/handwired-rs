@@ -19,6 +19,7 @@ mod bits;
 mod compiled;
 mod control;
 mod ops;
+mod option;
 mod wide;
 
 use std::cell::RefCell;
@@ -35,12 +36,13 @@ pub use compiled::{
     sample_variant,
 };
 pub use control::{
-    Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Placeholder, StoreElem, Unify, cast, if_else, index,
+    Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Native, Placeholder, StoreElem, Unify, cast, if_else, index,
     placeholder, store, unsupported,
 };
 /// `#[derive(HwType)]` on a struct with named fields; see the macros crate.
 pub use handwired_rs_macros::HwType;
-pub use ops::{Cmp, Logic, RunningSum, and, compare_native, eq, ge, gt, le, lt, ne, or, running_sums};
+pub use ops::{Cmp, Logic, RunningSum, and, cells_equal, compare_native, eq, ge, gt, le, lt, ne, or, running_sums};
+pub use option::{OptionHw, some};
 
 thread_local! {
     static CONTEXT: RefCell<Option<Circuit>> = const { RefCell::new(None) };

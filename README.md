@@ -73,8 +73,9 @@ code like `a + b` or `x.min(y)` stays as written. The macro rewrites only what R
 Overflow and out-of-bounds indexing panic in the oracle, so their circuit values are unspecified. `verify` skips
 inputs where the oracle panics; run it with overflow checks on (e.g. a debug build).
 
-**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12) and `#[derive(HwType)]`
-structs as parameters (up to 16), results and locals;
+**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12), `Option<T>`, and
+`#[derive(HwType)]` structs and enums (with or without data in their variants) as parameters (up to 16), results and
+locals;
 `+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant or an input value, see
 [Division](#division); f32 `/` by a power of two;
 integer `& | ^ !`, `<<` and `>>` by a constant or an input value (wrapping like Rust) and `count_ones()`, see
@@ -213,7 +214,47 @@ pub fn turn_step(turn: Turn, #[range(1, 6)] roll: u8, hold: bool) -> Turn {
 }
 ```
 
-Variants with data (`Option<T>`, `Move(u8)`) aren't supported yet.
+**Variants with data, and `Option<T>`.** On an enum whose variants carry data, the derive lays out one cell for the
+variant's index, then every variant's fields in order, each in its own cells. A value of one variant holds 0 in the
+other variants' cells, so their declared ranges take in 0: `Attack(#[range(1, 6)] u8)` declares its cell 0..6, and
+the circuit is exact over that whole range. `Option<T>` works the same way, with a `bool` for `Some` and `T`'s cells.
+A parameter's `#[range]` applies to the fields' scalars, and `#[ranges]` gives one range per cell, the variant's index
+first.
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, HwType)]
+pub enum Action {
+    Wait,
+    Move { #[range(-1, 1)] dx: i8, #[range(-1, 1)] dy: i8 },
+    Attack(#[range(1, 6)] u8),
+}
+
+// `Unit` is a derived struct with `x: i8`, `y: i8` and `hp: u8` (tests/macro_variants.rs has the full example).
+#[handwired]
+pub fn act(unit: Unit, action: Action) -> (Unit, Option<u8>) {
+    let mut next = unit;
+    let mut dealt: Option<u8> = None;
+    match action {
+        Action::Wait => {}
+        Action::Move { dx, dy } => {
+            next.x = (unit.x + dx).clamp(0, 9);
+            next.y = (unit.y + dy).clamp(0, 9);
+        }
+        Action::Attack(damage) => dealt = Some(damage * 2),
+    }
+    (next, dealt)
+}
+```
+
+Patterns bind fields by position or name, nest (`Some(Action::Attack(d)) if d > 3`), and take literals, ranges and
+`..` at the end; `match`, `if let`, `while let` and `matches!` all use them. Each variant test is one equality
+comparison of the index. `==` and `!=` compare the variant and, for variants with fields, the fields; ordering
+comparisons aren't supported. `Option` values have `is_some`, `is_none`, `unwrap_or`, `unwrap` and `expect` (the last
+two give an unspecified value for `None`, where Rust panics). The derive adds `ActionHw`, the circuit form.
+Constructors name the variant by its enum, `Action::Attack(d)` or `Action::Move { dx, dy: 0 }`, since the macro can't
+tell which enum a bare `Attack(d)` after `use Action::*` belongs to (bare unit variants work, as in patterns). `Some(x)`
+takes its type from where it goes (an annotated `let`, a result, an assigned variable), else from `x`, so a literal may
+need a suffix, `Some(3u8)`, and `let mut x = None` needs an annotation. `Result` isn't supported yet.
 
 ### Bitwise operators
 
@@ -429,9 +470,11 @@ returns without panicking. Overflow and out-of-bounds indexing panic in Rust, so
 unspecified. `verify()` samples inputs (plus each range's ends); it is a test, not a proof.
 
 **The `#[handwired]` subset.**
-- Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value,
-  enums whose variants carry data,
-  generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
+- Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value, `Result`,
+  generic structs and enums (other than `Option`), closures, references, generic functions, `let` chains
+  (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
+- An `if` whose branches are integer literals inside a struct or variant literal, e.g.
+  `Action::Attack(if strong { 6 } else { 3 })`, makes an `i32`; give a literal a suffix (`6u8`).
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
   `wrapping_*` go beyond as bytes. Divisors that may exceed 2^23 in magnitude, `saturating_*` on a wide value, and

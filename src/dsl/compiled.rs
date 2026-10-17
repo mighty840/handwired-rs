@@ -21,10 +21,18 @@ pub struct Attrs {
     pub range: Option<(f64, f64)>,
     pub grid: Option<f64>,
     pub ranges: Option<&'static [(f64, f64)]>,
+    /// Declare each scalar's range with 0 in it: the cells of an enum variant that isn't the value's variant hold 0.
+    /// Sampling ignores it.
+    pub holds_zero: bool,
 }
 
 impl Attrs {
-    pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None };
+    pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None, holds_zero: false };
+
+    /// These attributes for cells that hold 0 where their variant isn't the value's.
+    pub fn holding_zero(&self) -> Attrs {
+        Attrs { holds_zero: true, ..*self }
+    }
 
     /// The attributes of the `cells` scalars starting at `offset` within this value.
     pub fn part(&self, offset: usize, cells: usize) -> Attrs {
@@ -40,7 +48,7 @@ impl Attrs {
         if self.ranges.is_some() {
             self.part(offset, cells)
         } else if own.range.is_some() || own.ranges.is_some() || own.grid.is_some() {
-            *own
+            Attrs { holds_zero: self.holds_zero, ..*own }
         } else {
             *self
         }
@@ -105,6 +113,11 @@ pub trait HwType: Sized {
 }
 
 fn scalar_range<T: Scalar>(attrs: &Attrs) -> (f64, f64) {
+    let (low, high) = declared_range::<T>(attrs);
+    if attrs.holds_zero { (low.min(0.0), high.max(0.0)) } else { (low, high) }
+}
+
+fn declared_range<T: Scalar>(attrs: &Attrs) -> (f64, f64) {
     match (T::KIND, attrs.scalar_range()) {
         (Kind::Bool, _) => (0.0, 1.0),
         (_, Some((low, high))) => {
@@ -164,7 +177,7 @@ pub fn declare_scalar<T: Scalar>(inputs: &mut Inputs, attrs: &Attrs) -> Val<T> {
 }
 
 fn sample_scalar<T: Scalar>(rng: &mut Rng, attrs: &Attrs) -> T {
-    let (low, high) = scalar_range::<T>(attrs);
+    let (low, high) = declared_range::<T>(attrs);
     let pick = rng.next_u64() % 8;
     let value = match pick {
         0 => low,
@@ -182,7 +195,7 @@ fn sample_scalar<T: Scalar>(rng: &mut Rng, attrs: &Attrs) -> T {
 
 /// One of an enum's variants, uniformly, among those within a declared `#[range]`.
 pub fn sample_variant<T: Scalar>(rng: &mut Rng, attrs: &Attrs, variants: &[T]) -> T {
-    let (low, high) = scalar_range::<T>(attrs);
+    let (low, high) = declared_range::<T>(attrs);
     let allowed: Vec<T> = variants.iter().copied().filter(|variant| (low..=high).contains(&variant.to_f64())).collect();
     assert!(!allowed.is_empty(), "no variant of {} lies in #[range({low}, {high})]", T::NAME);
     allowed[(rng.next_u64() % allowed.len() as u64) as usize]

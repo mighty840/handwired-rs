@@ -668,6 +668,17 @@ pub(super) fn equality(left: Wire, right: Wire, equal: bool) -> Val<bool> {
     if equal { bit } else { not_bit(bit) }
 }
 
+/// Whether two values' cells are all equal, e.g. two enum variants' fields from [`HwType::outputs`](super::HwType).
+pub fn cells_equal(left: &[Wire], right: &[Wire]) -> Val<bool> {
+    assert_eq!(left.len(), right.len(), "values of different shapes");
+    let mut all = Val::constant(true);
+    for (&left, &right) in left.iter().zip(right) {
+        let same = equality(left, right, true);
+        all = and(all, || same);
+    }
+    all
+}
+
 impl<T: Scalar> Cmp<Val<T>> for Val<T> {
     type Output = Val<bool>;
     fn compare(self, relation: Relation, right: Val<T>) -> Val<bool> {

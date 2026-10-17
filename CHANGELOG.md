@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `Option<T>` and `#[derive(HwType)]` enums whose variants carry data, as parameters, results, locals, struct fields
+  and array elements: one cell for the variant, then every variant's fields, which hold 0 where the value is another
+  variant (their declared ranges take in 0). Constructors (`Action::Attack(d)`, `Action::Move { dx, dy }`,
+  `Some(x)`), patterns that bind fields by position or name and nest, `==`/`!=`, and `is_some`, `is_none`,
+  `unwrap_or`, `unwrap` and `expect` on Options. The derive adds `<Name>Hw` for such enums. `Attrs` gains
+  `holds_zero` (breaking for code that builds `Attrs` with a struct literal), and `dsl` gains `OptionHw`, `some`,
+  `Native` and `cells_equal`. Needs handwired-rs-macros 0.5.0.
 - `/` and `%` by a value that depends on the inputs: one table read of every pair's result where the two ranges have
   65,536 pairs or fewer, else long division over the dividend's bits, one comparison step per bit, for divisors within
   ±2^23 and dividends of any width, signed or not. `10 / x` and `10 % x` with a literal on the left work too.
