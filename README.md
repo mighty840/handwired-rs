@@ -280,12 +280,13 @@ of records runs in parallel. It reproduces the CPU reference evaluator bit for b
 
 The shader code is straight-line, a few statements per operation, and Mesa's compile time grows much faster than the
 code (on RADV: 0.1 s for 1,200 statements, 6 s for 4,900, 17–27 s for 8,400 depending on load). So a program of up to
-2,000 statements is one shader, and a longer one is split into stages of about 250 statements that compile in
-parallel and run one after another. Each cut goes where few values cross it; the values later stages read go through
-a storage buffer, which costs run time. On RADV, that 8,400-statement program, a 1,131-operation wide hash, sets up in
-0.14 s and runs 262,144 records in about 126 ms, against 45 ms as one shader. SHA-1 (68,036 operations,
-[below](#two-larger-examples)) becomes 1,240 stages that set up in 8 s, and hashes the 2,000 messages in about 0.3 s,
-measured with a GPU copy of the example. Mesa also caches compiled shaders on disk, so setting up the same program
+2,000 statements is one shader, and a longer one is split into stages that compile in parallel and run one after
+another: 1,000 statements each up to 20,000, then fewer with the square root of the length, down to 250 from 320,000.
+Each cut goes where few values cross it; the values later stages read go through a storage buffer, which costs run
+time in proportion to how many cross. On RADV, that 8,400-statement program, a 1,131-operation wide hash, becomes 6
+stages that set up in 0.47 s and run 262,144 records in about 62 ms, against 32 ms as one shader (in stages of 250:
+0.09 s and 120 ms). SHA-1 (68,036 operations, [below](#two-larger-examples)) becomes 1,240 stages that set up in 8 s,
+and hashes the 2,000 messages in about 0.3 s, measured with a GPU copy of the example. Mesa also caches compiled shaders on disk, so setting up the same program
 again is faster (2.6 s for SHA-1). `GpuBatch::staged` and `GpuProgram::from_program_staged` take another stage size:
 larger stages run faster and compile slower, and `usize::MAX` gives one shader.
 
@@ -433,8 +434,8 @@ exactness, differentiability and a tensor-shaped program, not speed.
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
 closer than 2^-126 compare equal, matching handwired's `flushSubnormals` executor; anything else is exact. WGSL
 lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU. A program longer than 2,000
-statements runs as stages, which pass values through memory and run slower than one shader would (about 3x for the
-wide hash on an integrated GPU).
+statements runs as stages, which pass values through memory and run slower than one shader would: about 2x for the
+wide hash on an integrated GPU, and more where hundreds of bits cross each cut.
 
 **Differentiability.** The reference evaluator has an exact backward pass, on the CPU only.
 `compiled.gradients(&records, output, weights, options)` sums it over many records on every core, and the `balance`

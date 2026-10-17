@@ -7,11 +7,12 @@
   `f32` or used in plain arithmetic without a cast, and keep their bytes for bitwise operators and shifts; the form
   nothing reads is removed at compile time. One-wire arithmetic on such a value that may leave ±2^24 goes back to
   bytes instead of failing the build. `Val::is_wide()` now means held only as bytes.
-- GPU: a program longer than `wgsl::WHOLE_STATEMENTS` (2,000) statements is split into stages of about
-  `wgsl::STAGE_STATEMENTS` (250), separate shaders that run one after another and pass the values later stages read
-  through a storage buffer. Drivers' compile time grows much faster than a shader's length, so a 1,131-operation wide
-  hash sets up in 0.14 s instead of 16–27 s on RADV, and SHA-1 (68,036 operations) in 8 s; staged programs run
-  slower than one shader would. Cuts go where the fewest values cross per statement, stages compile on every core,
+- GPU: a program longer than `wgsl::WHOLE_STATEMENTS` (2,000) statements is split into stages, separate shaders that
+  run one after another and pass the values later stages read through a storage buffer: `wgsl::stage_statements`
+  gives 1,000 statements per stage up to 20,000, shrinking with the square root of the length to 250 from 320,000.
+  Drivers' compile time grows much faster than a shader's length, so a 1,131-operation wide hash sets up in 0.47 s
+  instead of 16–27 s on RADV, and SHA-1 (68,036 operations) in 8 s; staged programs run slower than one shader would
+  (about 2x for the wide hash). Cuts go where the fewest values cross per statement, stages compile on every core,
   and a run splits into several dispatches if the carried values would pass the device's storage binding limit.
   `wgsl::emit_staged`, `GpuProgram::from_program_staged` and `GpuBatch::staged` take another stage size, and
   `GpuProgram::dispatch_records` caps the records per dispatch.

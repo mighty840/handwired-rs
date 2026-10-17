@@ -26,10 +26,12 @@
 //! long straight-line function (Mesa on RADV and lavapipe: 0.1 s for 1,200
 //! statements, 6 s for 4,900, 17 s for 8,400), and inline every function call,
 //! so a program longer than [`WHOLE_STATEMENTS`] is split into stages:
-//! separate shaders run one after another, each about [`STAGE_STATEMENTS`]
-//! statements, that pass the values later stages read through a storage
-//! buffer. An f32 round-trips through memory unchanged, so the split doesn't
-//! change any result.
+//! separate shaders run one after another, each of [`stage_statements`],
+//! that pass the values later stages read through a storage buffer. An f32
+//! round-trips through memory unchanged, so the split doesn't change any
+//! result. Those loads and stores cost run time, mostly in proportion to the
+//! values that cross each cut, so larger stages run faster and compile
+//! slower.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
@@ -42,9 +44,18 @@ pub const WORKGROUP_SIZE: u32 = 64;
 /// Statements up to which [`emit`] writes a program as one shader: about 0.6 s to compile on RADV, cached after.
 pub const WHOLE_STATEMENTS: usize = 2000;
 
-/// Statements per stage for a longer program, past which [`emit`] starts a new stage at the next row. Smaller
-/// stages compile faster in total; each stage also adds a pass over the records, so larger ones run faster.
-pub const STAGE_STATEMENTS: usize = 250;
+/// The largest and smallest statements per stage that [`stage_statements`] gives.
+pub const LARGE_STAGE_STATEMENTS: usize = 1000;
+pub const SMALL_STAGE_STATEMENTS: usize = 250;
+
+/// Statements per stage for a program of `total` statements beyond [`WHOLE_STATEMENTS`]: [`LARGE_STAGE_STATEMENTS`]
+/// up to 20,000 statements, so a mid-size program has few cuts for values to cross, then smaller with the square root
+/// of the length, down to [`SMALL_STAGE_STATEMENTS`] from 320,000, where compiling the large stages would take
+/// minutes (SHA-1 is about 500,000: 8 s to set up on RADV in stages of 250, 38 s in stages of 1,000).
+pub fn stage_statements(total: usize) -> usize {
+    let scaled = LARGE_STAGE_STATEMENTS as f64 * (20_000.0 / total.max(1) as f64).sqrt();
+    (scaled as usize).clamp(SMALL_STAGE_STATEMENTS, LARGE_STAGE_STATEMENTS)
+}
 
 /// One f32 as a WGSL literal with the exact bits.
 pub fn wgsl_float(value: f32) -> String {
@@ -217,24 +228,24 @@ impl Writer {
     }
 }
 
-/// Write the shaders for a compiled program: one shader up to [`WHOLE_STATEMENTS`] statements, else stages of about
-/// [`STAGE_STATEMENTS`].
+/// Write the shaders for a compiled program: one shader up to [`WHOLE_STATEMENTS`] statements, else stages of
+/// [`stage_statements`].
 pub fn emit(program: &TensorProgram) -> Shader {
-    emit_with(program, WHOLE_STATEMENTS, STAGE_STATEMENTS)
+    emit_with(program, WHOLE_STATEMENTS, None)
 }
 
 /// Write the shaders for a compiled program in stages of about `statements`
 /// statements (`usize::MAX` for one shader).
 pub fn emit_staged(program: &TensorProgram, statements: usize) -> Shader {
-    emit_with(program, statements, statements)
+    emit_with(program, statements, Some(statements))
 }
 
-fn emit_with(program: &TensorProgram, whole: usize, stage: usize) -> Shader {
+fn emit_with(program: &TensorProgram, whole: usize, stage: Option<usize>) -> Shader {
     let (writer, operation_count) = write(program, &BTreeSet::new());
     if writer.statements <= whole {
         return assemble(program, writer, operation_count);
     }
-    let cuts = cuts(&writer, stage);
+    let cuts = cuts(&writer, stage.unwrap_or_else(|| stage_statements(writer.statements)));
     let (writer, operation_count) = write(program, &cuts);
     assemble(program, writer, operation_count)
 }
