@@ -136,6 +136,29 @@ fn random_circuits_match_the_reference() {
     }
 }
 
+/// A run in several dispatches, as when the carried values pass the storage binding limit, gives the same results.
+#[test]
+fn runs_split_into_dispatches() {
+    let Some(gpu) = gpu() else { return };
+    let mut rng = Rng(23);
+    let circuit = random_circuit(&mut rng, 60);
+    let roots: Vec<Wire> = (circuit.source_size()..circuit.width()).map(Wire::from_index).collect();
+    let records: Vec<f32> = (0..100)
+        .flat_map(|_| {
+            let mut record: Vec<f32> = (0..4).map(|_| rng.uniform(-10.0, 10.0) as f32).collect();
+            record.push(rng.below(2) as f32);
+            record.push(rng.below(8) as f32);
+            record
+        })
+        .collect();
+    let program = circuit.compile(Some(&roots));
+    let whole = GpuProgram::from_program(&gpu, &program).unwrap().run(&gpu, &records).unwrap();
+    let mut split = GpuProgram::from_program_staged(&gpu, &program, SPLIT).unwrap();
+    split.dispatch_records = Some(7);
+    assert!(split.stages.len() > 1);
+    assert_eq!(split.run(&gpu, &records).unwrap(), whole);
+}
+
 /// Comparisons at their edges: equal values, one-ulp neighbors, grid neighbors.
 #[test]
 fn comparisons_match_native_f32() {

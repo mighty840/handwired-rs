@@ -113,6 +113,9 @@ pub struct GpuProgram {
     pub carried: usize,
     /// The WGSL of each stage, run in order.
     pub stages: Vec<String>,
+    /// At most this many records per dispatch; `None` fits each dispatch's buffers in the device's storage binding
+    /// limit.
+    pub dispatch_records: Option<usize>,
 }
 
 impl GpuProgram {
@@ -209,6 +212,7 @@ impl GpuProgram {
             operation_count: shader.operation_count,
             carried: shader.carried,
             stages: shader.stages,
+            dispatch_records: None,
         })
     }
 
@@ -226,7 +230,8 @@ impl GpuProgram {
         let limits = gpu.device.limits();
         let binding = (limits.max_storage_buffer_binding_size as u64).min(limits.max_buffer_size);
         let cells = self.source_size.max(self.output_count).max(self.carried).max(1) as u64;
-        let per_dispatch = (binding / (cells * 4)).max(1) as usize;
+        let fits = (binding / (cells * 4)).max(1) as usize;
+        let per_dispatch = self.dispatch_records.map_or(fits, |records| records.clamp(1, fits));
         let mut values = Vec::with_capacity(sources.len() / self.source_size * self.output_count);
         for part in sources.chunks(per_dispatch * self.source_size) {
             values.extend(self.dispatch(gpu, part)?);

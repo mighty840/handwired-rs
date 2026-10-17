@@ -242,6 +242,8 @@ fn emit_with(program: &TensorProgram, whole: usize, stage: usize) -> Shader {
 /// The rows to start stages at: each stage ends within half a stage of `budget` statements, at the row where the
 /// fewest values computed before it are read after it, since each of those is stored and loaded again.
 fn cuts(writer: &Writer, budget: usize) -> BTreeSet<usize> {
+    // Every stage holds at least one statement.
+    let budget = budget.max(2);
     let rows = writer.row_statements.len();
     let mut change = vec![0i64; rows + 2];
     for (position, &defined) in writer.defined_row.iter().enumerate() {

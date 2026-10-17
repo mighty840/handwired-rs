@@ -277,15 +277,15 @@ The `gpu/` crate runs a compiled program as WebGPU compute shaders (wgpu 25), on
 of records runs in parallel. It reproduces the CPU reference evaluator bit for bit.
 
 The shader code is straight-line, a few statements per operation, and Mesa's compile time grows much faster than the
-code (on RADV: 0.1 s for 1,200 statements, 6 s for 4,900, 17 s for 8,400). So a program of up to 2,000 statements is
-one shader, and a longer one is split into stages of about 250 statements that compile in parallel and run one after
-another. Each cut goes where few values cross it; the values later stages read go through a storage buffer, which
-costs run time. On RADV, a 1,131-operation wide hash sets up in 0.14 s instead of about 27 s as one shader, and runs
-262,144 records in 126 ms instead of 45 ms. SHA-1 (68,036 operations, [below](#two-larger-examples)) becomes 1,240
-stages that set up in 8 s, and hashes the 2,000 messages in about 0.3 s, measured with a GPU copy of the example.
-Mesa also caches compiled shaders on disk, so setting up the same program again is faster (2.6 s for SHA-1).
-`GpuBatch::staged` and `GpuProgram::from_program_staged` take another stage size: larger stages run faster and
-compile slower, and `usize::MAX` gives one shader.
+code (on RADV: 0.1 s for 1,200 statements, 6 s for 4,900, 17–27 s for 8,400 depending on load). So a program of up to
+2,000 statements is one shader, and a longer one is split into stages of about 250 statements that compile in
+parallel and run one after another. Each cut goes where few values cross it; the values later stages read go through
+a storage buffer, which costs run time. On RADV, that 8,400-statement program, a 1,131-operation wide hash, sets up in
+0.14 s and runs 262,144 records in about 126 ms, against 45 ms as one shader. SHA-1 (68,036 operations,
+[below](#two-larger-examples)) becomes 1,240 stages that set up in 8 s, and hashes the 2,000 messages in about 0.3 s,
+measured with a GPU copy of the example. Mesa also caches compiled shaders on disk, so setting up the same program
+again is faster (2.6 s for SHA-1). `GpuBatch::staged` and `GpuProgram::from_program_staged` take another stage size:
+larger stages run faster and compile slower, and `usize::MAX` gives one shader.
 
 ```rust
 let gpu = handwired_rs_gpu::Gpu::new()?;
