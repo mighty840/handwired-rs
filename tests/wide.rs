@@ -423,3 +423,57 @@ fn loose_ranges_divide_by_long_division() {
         assert_eq!(compiled.eval(&(a, b)).unwrap(), loose_division(a, b), "{a} {b}");
     }
 }
+
+/// Divisors at the edges of long division: a u64 with digits narrower than a byte, the largest divisor (2^23 - 1, one
+/// bit per digit), and powers of two up to 2^23, which take a shift and a mask instead.
+#[handwired]
+#[allow(clippy::needless_range_loop)]
+fn division_edges(a: [u8; 4], b: [u8; 8]) -> ([u8; 8], u32, u32, u32, u32, u32) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    let mut long = 0u64;
+    for i in 0..8 {
+        long |= (b[i] as u64) << (8 * i);
+    }
+    let quotient = long / 5_000_000;
+    let mut quotient_bytes = [0u8; 8];
+    for i in 0..8 {
+        quotient_bytes[i] = (quotient >> (8 * i)) as u8;
+    }
+    (quotient_bytes, (long % 5_000_000) as u32, x / 8_388_607, x % 8_388_607, x / 8_388_608, x % 8_388_608)
+}
+
+#[test]
+fn division_edges_match_rust() {
+    let compiled = division_edges_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let words = [0u32, 8_388_606, 8_388_607, 8_388_608, 16_777_214, 0x7FFF_FFFF, u32::MAX];
+    let longs = [0u64, 4_999_999, 5_000_000, u32::MAX as u64, u64::MAX];
+    for &x in &words {
+        for &long in &longs {
+            let args = (x.to_le_bytes(), long.to_le_bytes());
+            assert_eq!(compiled.eval(&args).unwrap(), division_edges(args.0, args.1), "{x:#x} {long:#x}");
+        }
+    }
+}
+
+/// Unsigned division by a power of two moves bytes and masks them: no long division, the same circuit as the shift and
+/// mask written out.
+#[handwired]
+fn by_powers_of_two(a: [u8; 4]) -> (u32, u32) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    (x / 65_536, x % 4096)
+}
+
+#[handwired]
+fn shifted_and_masked(a: [u8; 4]) -> (u32, u32) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    (x >> 16, x & 0xFFF)
+}
+
+#[test]
+fn powers_of_two_divide_by_shifting() {
+    let compiled = by_powers_of_two_circuit();
+    assert_eq!(compiled.verify(5_000).unwrap().skipped, 0);
+    let written_out = shifted_and_masked_circuit().program.live_operation_count();
+    assert_eq!(compiled.program.live_operation_count(), written_out);
+}

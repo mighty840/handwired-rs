@@ -5,7 +5,8 @@
 - GPU stages pass integers within small ranges as only the bits their ranges need, packed into 32-bit words (the
   carried buffer is now `array<u32>`; other values pass as their f32 bits), and cuts count values in words: the wide
   hash carries 87 words per record instead of 152 and runs roughly 30% faster. `TensorProgram` gains `ranges` and
-  `grids`, each packed position's range and grid in the circuit.
+  `grids`, each packed position's range and grid in the circuit. A packed -0 comes back as +0, within the GPU's
+  existing "up to the sign of zero" match.
 - `/` and `%` by a constant on wide values, and on one-wire values of wide types whose range is too wide for a table
   (65,536 entries or more): long division over the bytes, a byte at a time for divisors up to 65,536 and fewer bits
   at a time up to 2^23 (larger divisors fail the build), truncating toward zero like Rust; unsigned division by a
