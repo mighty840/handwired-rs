@@ -1,5 +1,5 @@
-//! Integers beyond ±2^24, held as bytes inside the circuit. Each function
-//! takes and returns bytes, so `verify` samples the full width.
+//! Integers beyond ±2^24, held as bytes inside the circuit. Most functions
+//! take and return bytes, so `verify` samples the full width.
 
 use handwired_rs::handwired;
 

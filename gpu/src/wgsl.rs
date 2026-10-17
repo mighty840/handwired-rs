@@ -50,8 +50,9 @@ pub const SMALL_STAGE_STATEMENTS: usize = 250;
 
 /// Statements per stage for a program of `total` statements beyond [`WHOLE_STATEMENTS`]: [`LARGE_STAGE_STATEMENTS`]
 /// up to 20,000 statements, so a mid-size program has few cuts for values to cross, then smaller with the square root
-/// of the length, down to [`SMALL_STAGE_STATEMENTS`] from 320,000, where compiling the large stages would take
-/// minutes (SHA-1 is about 500,000: 8 s to set up on RADV in stages of 250, 38 s in stages of 1,000).
+/// of the length, down to [`SMALL_STAGE_STATEMENTS`] from 320,000, where large stages compile slowly in total (SHA-1
+/// is about 460,000 statements: 8–17 s to set up on RADV in stages of 250, depending on load, and 38 s in stages of
+/// 1,000).
 pub fn stage_statements(total: usize) -> usize {
     let scaled = LARGE_STAGE_STATEMENTS as f64 * (20_000.0 / total.max(1) as f64).sqrt();
     (scaled as usize).clamp(SMALL_STAGE_STATEMENTS, LARGE_STAGE_STATEMENTS)
