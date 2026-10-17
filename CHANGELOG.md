@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-17): handwired-rs and handwired-rs-gpu 0.6.0, handwired-rs-macros 0.4.0
 
 - Wide integers: `u32`, `i32`, `u64`, `i64` and `usize` values may go beyond ±2^24 inside a circuit, held as bytes,
   where shifts, bitwise operators, rotates, `wrapping_add/sub/mul`, constants beyond ±2^24 or already wide operands
