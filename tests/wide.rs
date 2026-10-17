@@ -297,3 +297,43 @@ fn abs_wide(a: u8) -> u8 {
 fn abs_on_wide_values_is_rejected() {
     abs_wide_circuit();
 }
+
+/// Masks and shifts that bring a wide value back within ±2^24 give it one wire again: it is returned, compared, cast
+/// to f32 and added without a cast; an `if` of two such values keeps their bytes for the `^` after it; a negative
+/// value whose high bytes are all set narrows too; and arithmetic that may leave ±2^24 again goes back to bytes.
+#[handwired]
+#[allow(clippy::type_complexity)]
+fn narrowed(a: [u8; 4], #[range(0, 7)] s: u8) -> (u32, u32, i32, bool, f32, u32, u32, u32, u64) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    let h = x.wrapping_mul(0x9E37_79B1);
+    let top = h >> 24;
+    let low = h & 0xFFFF;
+    let negative = (h as i32) | !0xFFFFi32;
+    let spread = low * 0x10001;
+    let merged = if s > 3 { top } else { low };
+    let long = (h as u64) << 8 >> 40;
+    (
+        top,
+        low,
+        negative,
+        top > 200 && low < 1000,
+        top as f32 * 0.5,
+        spread >> 20,
+        merged ^ (h >> 16),
+        top + low * 3,
+        long,
+    )
+}
+
+#[test]
+fn values_back_within_range_narrow_again() {
+    let compiled = narrowed_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let edges = [0u32, 1, 0xFF, 0xFFFF, 0x00FF_FFFF, 0x0100_0000, 0x7FFF_FFFF, 0x8000_0000, u32::MAX];
+    for &x in &edges {
+        for s in [0, 7] {
+            let args = (x.to_le_bytes(), s);
+            assert_eq!(compiled.eval(&args).unwrap(), narrowed(args.0, s), "{x:#x} {s}");
+        }
+    }
+}

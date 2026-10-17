@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Wide values narrow again: bytes whose high bytes are known 0s (or known 255s, for a negative value of a signed type),
+  e.g. after `h >> 24` or `h & 0xFFFF`, also get one wire within ±2^24, so they can be returned, compared, cast to
+  `f32` or used in plain arithmetic without a cast, and keep their bytes for bitwise operators and shifts; the form
+  nothing reads is removed at compile time. One-wire arithmetic on such a value that may leave ±2^24 goes back to
+  bytes instead of failing the build. `Val::is_wide()` now means held only as bytes.
 - GPU: a program longer than `wgsl::WHOLE_STATEMENTS` (2,000) statements is split into stages of about
   `wgsl::STAGE_STATEMENTS` (250), separate shaders that run one after another and pass the values later stages read
   through a storage buffer. Drivers' compile time grows much faster than a shader's length, so a 1,131-operation wide

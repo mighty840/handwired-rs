@@ -152,10 +152,16 @@ integer_scalars!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
 
 /// A circuit value standing for a Rust value of type `T`: one wire, or for
 /// an integer type wider than 24 bits whose value may leave ±2^24, its bytes,
-/// one wire per 8 bits of its two's-complement pattern.
+/// one wire per 8 bits of its two's-complement pattern. Bytes whose value
+/// fits within ±2^24 again, e.g. after a mask or a shift, come with the one
+/// wire too; whichever form the circuit doesn't read is removed when it
+/// compiles.
 pub struct Val<T> {
-    narrow: Wire,
+    narrow: Option<Wire>,
     pub(crate) wide: Option<Limbs>,
+    /// The value came from bytes: one-wire arithmetic on it that may leave ±2^24 goes back to bytes, as the bytes
+    /// would have, instead of failing the build like arithmetic on a loose declared range.
+    pub(crate) spill: bool,
     marker: PhantomData<T>,
 }
 
@@ -168,12 +174,16 @@ impl<T> Copy for Val<T> {}
 
 impl<T> Debug for Val<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.wide {
-            None => write!(formatter, "Val({})", self.narrow.index()),
-            Some(limbs) => {
+        match (self.narrow, &self.wide) {
+            (Some(wire), None) => write!(formatter, "Val({})", wire.index()),
+            (narrow, Some(limbs)) => {
                 let indices: Vec<usize> = limbs.wires().iter().map(|wire| wire.index()).collect();
-                write!(formatter, "Val(bytes {indices:?})")
+                match narrow {
+                    Some(wire) => write!(formatter, "Val({}, bytes {indices:?})", wire.index()),
+                    None => write!(formatter, "Val(bytes {indices:?})"),
+                }
             }
+            (None, None) => unreachable!("a value has a wire or bytes"),
         }
     }
 }
@@ -182,29 +192,46 @@ impl<T> Val<T> {
     /// The value's wire. Panics for a wide integer, which is several wires.
     #[track_caller]
     pub fn wire(&self) -> Wire {
-        if self.wide.is_some() {
+        let Some(wire) = self.narrow else {
             panic!(
                 "{}: this value may leave ±2^24, so it is held as bytes, and this operation needs it as one wire; \
                  narrow it first, e.g. with `as u8` or a mask",
                 std::panic::Location::caller()
             );
-        }
-        self.narrow
+        };
+        wire
     }
 
-    /// Whether the value is held as bytes.
+    /// Whether the value is held only as bytes, without one wire.
     pub fn is_wide(&self) -> bool {
+        self.narrow.is_none()
+    }
+
+    /// Whether the value has bytes, with or without one wire.
+    pub(crate) fn has_bytes(&self) -> bool {
         self.wide.is_some()
+    }
+
+    /// The value, spilling into bytes like `spill` says.
+    pub(crate) fn spilling(mut self, spill: bool) -> Val<T> {
+        self.spill = spill;
+        self
     }
 }
 
 impl<T: Scalar> Val<T> {
     pub fn from_wire(wire: Wire) -> Val<T> {
-        Val { narrow: wire, wide: None, marker: PhantomData }
+        Val { narrow: Some(wire), wide: None, spill: false, marker: PhantomData }
     }
 
+    /// Bytes, with one wire as well where their value fits within ±2^24.
     pub(crate) fn from_limbs(limbs: Limbs) -> Val<T> {
-        Val { narrow: limbs.wires()[0], wide: Some(limbs), marker: PhantomData }
+        Val { narrow: wide::narrow_form::<T>(&limbs), wide: Some(limbs), spill: true, marker: PhantomData }
+    }
+
+    /// One wire and the bytes of the same value.
+    pub(crate) fn both(wire: Wire, limbs: Limbs) -> Val<T> {
+        Val { narrow: Some(wire), wide: Some(limbs), spill: true, marker: PhantomData }
     }
 
     /// A wire that always holds `value`, or bytes for an integer beyond ±2^24.

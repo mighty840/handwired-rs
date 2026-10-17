@@ -260,14 +260,16 @@ fn fnv1a(bytes: [u8; 8]) -> [u8; 4] {
 }
 ```
 
-Parameters and results are still one cell each within ±2^24, so a wide value goes in and out as bytes (or masked
-within 24 bits); returning one fails the build with a message saying so. A value that went wide stays wide, even
-where its value would fit again, e.g. `x & 0xFFFF_FF00`: narrow it with `as u8`/`as u16` or a shift and cast before
-returning it. Plain `+`, `-` and `*` of one-wire values
-keep failing the build where their declared ranges may leave ±2^24, so a loose `#[range]` isn't silently turned into
-byte arithmetic, which costs far more. The tests check u32, i32 and u64 arithmetic, bitwise operators, shifts by
-inputs up to 63, rotates and casts against Rust (sampled over the full width, plus every carry boundary and the
-extremes), FNV-1a, and a 49-bit Connect Four bitboard; the GPU test runs a wide hash.
+Parameters and results are still one cell each within ±2^24, so a wide value goes in and out as bytes, or once it
+fits again: where its high bytes are known zeros, e.g. after `h >> 24` or `h & 0xFFFF` (or, for signed types, known
+255s, e.g. `x | !0xFFFF`), the value gets one wire again, so it can be returned, compared, cast to `f32` or added
+without a cast. It keeps its bytes for bitwise operators and shifts, and the circuit drops whichever form nothing
+reads. Returning a value that may still leave ±2^24 fails the build with a message saying so. Plain `+`, `-` and `*`
+of one-wire values keep failing the build where their declared ranges may leave ±2^24, so a loose `#[range]` isn't
+silently turned into byte arithmetic, which costs far more; arithmetic on a value that came back from bytes goes back
+to bytes instead, e.g. `(h & 0xFFFF) * 0x10001`. The tests check u32, i32 and u64 arithmetic, bitwise operators,
+shifts by inputs up to 63, rotates, casts and narrowing against Rust (sampled over the full width, plus every carry
+boundary and the extremes), FNV-1a, and a 49-bit Connect Four bitboard; the GPU test runs a wide hash.
 
 See [Limitations](#limitations) for what isn't supported.
 
@@ -410,8 +412,9 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
   generic structs, `Option`, closures, references, generic functions, `let` chains (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
-  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value, `saturating_*` and `abs` on one, and wide values cast to
-  `f32` aren't supported; each fails the build with a message. `f32` parameters need `#[range]`s.
+  `wrapping_*` go beyond as bytes. `/` and `%` of a wide value, `saturating_*` and `abs` on one, and `f32` casts of values
+  that may leave ±2^24 aren't supported; each fails the build with a message. A wide value narrows again only where
+  its high bytes are known, so a signed one shifted right, e.g. `x >> 24` on an `i32`, stays bytes: cast it, `as i8`. `f32` parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
   value (`for x in arr`), not with `.iter()`.

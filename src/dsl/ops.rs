@@ -12,7 +12,7 @@ use super::wide::{self, Limbs};
 use super::{Kind, Num, Scalar, Val, is_wide, known_bit, settle, with_circuit};
 use crate::circuit::{Circuit, OutOfRange};
 use crate::emit::{Relation, emit_and, emit_compare, emit_or};
-use crate::numeric::lowest_power_of_two;
+use crate::numeric::{Range, lowest_power_of_two};
 use crate::wire::{Lin, Wire};
 
 const EXACT_LIMIT: f64 = 16_777_216.0;
@@ -60,6 +60,42 @@ pub(super) fn wide_pair<T: Scalar>(left: Val<T>, right: Val<T>) -> Option<(Limbs
     (left.is_wide() || right.is_wide()).then(|| (wide::limbs_as::<T, T>(left), wide::limbs_as::<T, T>(right)))
 }
 
+/// Both sides as bytes for a bitwise operator: where either is held only as bytes, or either has bytes and the
+/// other's come free (it has them too, is a constant, or is one byte), since splitting bytes into bits is cheaper
+/// than splitting a wire of up to 24 bits.
+pub(super) fn byte_pair<T: Scalar>(left: Val<T>, right: Val<T>) -> Option<(Limbs, Limbs)> {
+    let free = |value: Val<T>| {
+        value.has_bytes()
+            || with_circuit(|circuit| {
+                let range = circuit.range(value.wire());
+                circuit.constant_value(value.wire()).is_some() || range.min >= 0.0 && range.max < 256.0
+            })
+    };
+    let bytes =
+        left.is_wide() || right.is_wide() || (left.has_bytes() || right.has_bytes()) && free(left) && free(right);
+    bytes.then(|| (wide::limbs_as::<T, T>(left), wide::limbs_as::<T, T>(right)))
+}
+
+/// Both sides as bytes where one-wire arithmetic on a value that came from bytes may leave ±2^24, bounded by `low`
+/// and `high` over the operands' ranges: the bytes wrap like they would have.
+fn spilled<T: Scalar>(
+    left: Val<T>,
+    right: Val<T>,
+    low: impl Fn(Range, Range) -> f64,
+    high: impl Fn(Range, Range) -> f64,
+) -> Option<(Limbs, Limbs)> {
+    if !(left.spill || right.spill) || !is_wide::<T>() {
+        return None;
+    }
+    let (a, b) = with_circuit(|circuit| (circuit.range(left.wire()), circuit.range(right.wire())));
+    let fits = low(a, b) > -EXACT_LIMIT && high(a, b) < EXACT_LIMIT;
+    (!fits).then(|| (wide::limbs_as::<T, T>(left), wide::limbs_as::<T, T>(right)))
+}
+
+fn product_bounds(a: Range, b: Range) -> [f64; 4] {
+    [a.min * b.min, a.min * b.max, a.max * b.min, a.max * b.max]
+}
+
 /// A native operand as a circuit value: bytes beyond ±2^24, where `wide_pair` takes over.
 fn beyond<T: Scalar>(value: T) -> bool {
     T::KIND == Kind::Int && value.to_i128().unsigned_abs() >= 1 << 24
@@ -72,14 +108,17 @@ impl<T: Num> Add for Val<T> {
         if let Some((a, b)) = wide_pair(self, right) {
             return wide::add(&a, &b);
         }
-        sum(self.wire() + right.wire())
+        if let Some((a, b)) = spilled(self, right, |a, b| a.min + b.min, |a, b| a.max + b.max) {
+            return wide::add(&a, &b);
+        }
+        sum::<T>(self.wire() + right.wire()).spilling(self.spill || right.spill)
     }
 }
 impl<T: Num> Add<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn add(self, right: T) -> Val<T> {
-        if self.is_wide() || beyond(right) {
+        if self.is_wide() || self.spill || beyond(right) {
             return self + Val::constant(right);
         }
         sum(self.wire() + right.to_f64())
@@ -92,14 +131,17 @@ impl<T: Num> Sub for Val<T> {
         if let Some((a, b)) = wide_pair(self, right) {
             return wide::sub(&a, &b);
         }
-        sum(self.wire() - right.wire())
+        if let Some((a, b)) = spilled(self, right, |a, b| a.min - b.max, |a, b| a.max - b.min) {
+            return wide::sub(&a, &b);
+        }
+        sum::<T>(self.wire() - right.wire()).spilling(self.spill || right.spill)
     }
 }
 impl<T: Num> Sub<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn sub(self, right: T) -> Val<T> {
-        if self.is_wide() || beyond(right) {
+        if self.is_wide() || self.spill || beyond(right) {
             return self - Val::constant(right);
         }
         sum(self.wire() - right.to_f64())
@@ -112,14 +154,19 @@ impl<T: Num> Mul for Val<T> {
         if let Some((a, b)) = wide_pair(self, right) {
             return wide::mul(&a, &b);
         }
-        product(self.wire(), right.wire())
+        let low = |a, b| product_bounds(a, b).into_iter().fold(f64::INFINITY, f64::min);
+        let high = |a, b| product_bounds(a, b).into_iter().fold(f64::NEG_INFINITY, f64::max);
+        if let Some((a, b)) = spilled(self, right, low, high) {
+            return wide::mul(&a, &b);
+        }
+        product::<T>(self.wire(), right.wire()).spilling(self.spill || right.spill)
     }
 }
 impl<T: Num> Mul<T> for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn mul(self, right: T) -> Val<T> {
-        if self.is_wide() || beyond(right) {
+        if self.is_wide() || self.spill || beyond(right) {
             return self * Val::constant(right);
         }
         sum(self.wire() * right.to_f64())
@@ -129,7 +176,7 @@ impl<T: Num> Neg for Val<T> {
     type Output = Val<T>;
     #[track_caller]
     fn neg(self) -> Val<T> {
-        if self.is_wide() {
+        if self.is_wide() || self.spill {
             return Val::constant(T::from_f64(0.0)) - self;
         }
         sum(-self.wire())

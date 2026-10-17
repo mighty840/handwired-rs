@@ -45,10 +45,11 @@ impl<T: Scalar> Mux for Val<T> {
         if off.is_wide() || on.is_wide() {
             return wide::select(bit, &wide::limbs_as::<T, T>(off), &wide::limbs_as::<T, T>(on));
         }
-        if off.wire() == on.wire() {
-            return off;
+        if off.wire() == on.wire() && off.wide.is_none() && on.wide.is_none() {
+            return off.spilling(off.spill || on.spill);
         }
-        with_circuit(|circuit| {
+        let spill = off.spill || on.spill;
+        let narrow = with_circuit(|circuit| {
             let (off_range, on_range) = (circuit.range(off.wire()), circuit.range(on.wire()));
             let wire = circuit.select(bit.wire(), off.wire(), on.wire());
             // Either side is a T wherever the function doesn't panic, so the result stays in T's range too; this
@@ -58,7 +59,13 @@ impl<T: Scalar> Mux for Val<T> {
                 Kind::Float => settle(circuit, wire, low, high),
                 _ => settle(circuit, wire, low.max(T::MIN), high.min(T::MAX)),
             }
-        })
+        });
+        // Both sides have bytes too: so does the result, for bitwise operators after the merge.
+        if off.has_bytes() && on.has_bytes() {
+            let bytes = wide::select::<T>(bit, &wide::limbs_as::<T, T>(off), &wide::limbs_as::<T, T>(on));
+            return Val::both(narrow.wire(), bytes.wide.unwrap());
+        }
+        narrow.spilling(spill)
     }
 
     fn read_dynamic<I: IntScalar>(items: &[Val<T>], index: Val<I>) -> Val<T> {
@@ -67,11 +74,12 @@ impl<T: Scalar> Mux for Val<T> {
             return wide::read(&bytes, index.wire());
         }
         let candidates: Vec<Wire> = items.iter().map(|item| item.wire()).collect();
-        with_circuit(|circuit| {
+        let read: Val<T> = with_circuit(|circuit| {
             let wire = circuit.index_read(index.wire(), &candidates, OutOfRange::Clamp);
             let range = circuit.range(wire);
             settle(circuit, wire, range.min, range.max)
-        })
+        });
+        read.spilling(items.iter().any(|item| item.spill))
     }
 }
 
@@ -454,7 +462,13 @@ impl<S: Scalar, T: Scalar> CastTo<T> for Val<S> {
 }
 
 fn cast_value<S: Scalar, T: Scalar>(value: Val<S>, at: &'static Location<'static>) -> Val<T> {
-    if value.is_wide() {
+    // A value with bytes casts through them between integers, unless its one wire already fits the target.
+    let through_bytes = value.is_wide()
+        || value.has_bytes() && S::KIND == Kind::Int && T::KIND == Kind::Int && {
+            let range = with_circuit(|circuit| circuit.range(value.wire()));
+            is_wide::<T>() || !(range.min >= T::MIN && range.max <= T::MAX)
+        };
+    if through_bytes {
         // `as` between integers keeps the low bits, sign-extended from a signed source: the bytes, resized.
         return match T::KIND {
             Kind::Int if is_wide::<T>() => Val::from_limbs(wide::limbs_as::<S, T>(value)),

@@ -16,7 +16,7 @@
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 use std::panic::Location;
 
-use super::ops::{and_bits, number, wide_pair};
+use super::ops::{and_bits, byte_pair, number};
 use super::wide::{self, Motion};
 use super::{IntScalar, Mux, Scalar, Val, is_wide, known_bit, settle, width, with_circuit};
 use crate::circuit::Circuit;
@@ -161,7 +161,7 @@ fn may_be_set(bit: Val<bool>) -> bool {
 #[track_caller]
 fn bitwise<T: Scalar>(left: Val<T>, right: Val<T>, weight: f64) -> Val<T> {
     let at = Location::caller();
-    if let Some((a, b)) = wide_pair(left, right) {
+    if let Some((a, b)) = byte_pair(left, right) {
         return wide::bitwise(&a, &b, weight);
     }
     let (left_bits, right_bits) = (split(left), split(right));
@@ -178,7 +178,7 @@ fn bitwise<T: Scalar>(left: Val<T>, right: Val<T>, weight: f64) -> Val<T> {
 
 /// `value << amount` for a native amount, wrapped into the type's width like Rust.
 fn shift_left<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
-    if value.is_wide() {
+    if value.has_bytes() {
         return wide::shift(&wide::limbs_as::<T, T>(value), amount as usize, Motion::Left);
     }
     let factor = 2f64.powi(amount as i32);
@@ -211,7 +211,7 @@ fn shift_left<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
 
 /// `value >> amount` for a native amount: the high bits, a floor division by 2^amount.
 fn shift_right<T: Scalar>(value: Val<T>, amount: u32, at: &Location) -> Val<T> {
-    if value.is_wide() {
+    if value.has_bytes() {
         return wide::shift(&wide::limbs_as::<T, T>(value), amount as usize, Motion::Right);
     }
     let bits = split(value);
@@ -292,7 +292,7 @@ impl<T: IntScalar> Not for Val<T> {
     fn not(self) -> Val<T> {
         let at = Location::caller();
         let flip = if T::MIN < 0.0 { -1.0 } else { T::MAX };
-        if self.is_wide() || flip >= 16_777_216.0 {
+        if self.has_bytes() || flip >= 16_777_216.0 {
             // E.g. `!x` on a u32 is at least 2^32 - 2^24: flip the bytes.
             return wide::not(&wide::limbs_as::<T, T>(self));
         }
@@ -389,7 +389,7 @@ impl<T: IntScalar> Val<T> {
     /// The number of 1 bits in the type's width, like `u8::count_ones`.
     #[track_caller]
     pub fn count_ones(self) -> Val<u32> {
-        if self.is_wide() {
+        if self.has_bytes() {
             return wide::count_ones(&wide::limbs_as::<T, T>(self));
         }
         let bits = split(self);

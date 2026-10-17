@@ -85,6 +85,43 @@ fn byte(circuit: &mut Circuit, form: Lin) -> Wire {
     wire
 }
 
+/// One wire for a value given as bytes, where its range fits within ±2^24:
+/// the bytes' sum when the bytes above some position are known 0s (a
+/// non-negative value), or, for signed types, known 255s (a negative value,
+/// the sum minus 256^position).
+pub(super) fn narrow_form<T: Scalar>(limbs: &Limbs) -> Option<Wire> {
+    let wires = limbs.wires();
+    let fill = |value: f64| wires.iter().rposition(|&wire| known(wire) != Some(value)).map_or(0, |last| last + 1);
+    let (used, offset) = match fill(0.0) {
+        used if used <= 3 => (used, 0.0),
+        _ if signed::<T>() && fill(255.0) <= 3 => (fill(255.0), -BASE.powi(fill(255.0) as i32)),
+        _ => return None,
+    };
+    with_circuit(|circuit| {
+        let mut form = Lin::new(vec![], offset);
+        let (mut low, mut high) = (offset, offset);
+        for (index, &wire) in wires[..used].iter().enumerate() {
+            let weight = BASE.powi(index as i32);
+            let range = circuit.range(wire);
+            low += range.min * weight;
+            high += range.max * weight;
+            match circuit.constant_value(wire) {
+                Some(value) => form.bias += value * weight,
+                None => form.terms.push((wire, weight)),
+            }
+        }
+        if !(low > -16_777_216.0 && high < 16_777_216.0) {
+            return None;
+        }
+        let wire = match form.terms.as_slice() {
+            [] => constant(circuit, form.bias),
+            [(wire, weight)] if *weight == 1.0 && form.bias == 0.0 => *wire,
+            _ => circuit.affine(form),
+        };
+        Some(settle::<T>(circuit, wire, low, high).wire())
+    })
+}
+
 /// The bytes of a constant's two's-complement pattern in `T`'s width.
 pub(super) fn constant_limbs<T: Scalar>(value: i128) -> Limbs {
     let count = limb_count::<T>();
