@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- GPU: a program longer than `wgsl::WHOLE_STATEMENTS` (2,000) statements is split into stages of about
+  `wgsl::STAGE_STATEMENTS` (250), separate shaders that run one after another and pass the values later stages read
+  through a storage buffer. Drivers' compile time grows much faster than a shader's length, so a 1,131-operation wide
+  hash sets up in 0.14 s instead of about 27 s on RADV, and SHA-1 (68,036 operations) in 8 s; staged programs run
+  slower than one shader would. Cuts go where the fewest values cross per statement, stages compile on every core,
+  and a run splits into several dispatches if the carried values would pass the device's storage binding limit.
+  `wgsl::emit_staged`, `GpuProgram::from_program_staged` and `GpuBatch::staged` take another stage size.
+- `GpuProgram::wgsl` and `wgsl::Shader::code` are replaced by `stages: Vec<String>`, and shaders bind a fifth buffer
+  for carried values (breaking for code that read the WGSL or bound it itself).
+
 ## 0.6.0 (2026-10-17): handwired-rs and handwired-rs-gpu 0.6.0, handwired-rs-macros 0.4.0
 
 - Wide integers: `u32`, `i32`, `u64`, `i64` and `usize` values may go beyond ±2^24 inside a circuit, held as bytes,

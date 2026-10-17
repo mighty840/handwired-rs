@@ -1,8 +1,9 @@
 //! Run handwired circuits as WebGPU compute shaders.
 //!
-//! A program becomes one WGSL compute shader that evaluates one record per
-//! invocation, so a batch of records, e.g. 100,000 documents to score, runs
-//! in parallel. The shader reproduces the CPU reference evaluator's values
+//! A program becomes WGSL compute shaders that evaluate one record per
+//! invocation, so a batch of records, e.g. 100,000 documents to score, runs in
+//! parallel. A long program is split into stages that run one after another
+//! (see [`wgsl`]). The shaders reproduce the CPU reference evaluator's values
 //! bit for bit, within the limits in [`wgsl`]'s documentation.
 //!
 //! ```no_run
@@ -99,33 +100,40 @@ impl Gpu {
     }
 }
 
-/// A compiled program on the GPU: the shader pipeline and its constant tables.
+/// A compiled program on the GPU: a pipeline per shader stage and the constant tables.
 pub struct GpuProgram {
-    pipeline: wgpu::ComputePipeline,
+    pipelines: Vec<wgpu::ComputePipeline>,
     bind_group_layout: wgpu::BindGroupLayout,
     tables: wgpu::Buffer,
     pub source_size: usize,
     pub output_count: usize,
-    /// Operations the shader evaluates per record.
+    /// Operations the shaders evaluate per record.
     pub operation_count: usize,
-    pub wgsl: String,
+    /// Cells per record that stages pass to later stages.
+    pub carried: usize,
+    /// The WGSL of each stage, run in order.
+    pub stages: Vec<String>,
 }
 
 impl GpuProgram {
-    /// Compile the operations that `roots` need into a shader.
+    /// Compile the operations that `roots` need into shaders.
     pub fn new(gpu: &Gpu, circuit: &Circuit, roots: &[Wire]) -> Result<GpuProgram, GpuError> {
         let program = circuit.compile(Some(roots));
         GpuProgram::from_program(gpu, &program)
     }
 
     pub fn from_program(gpu: &Gpu, program: &TensorProgram) -> Result<GpuProgram, GpuError> {
-        let shader = wgsl::emit(program);
+        GpuProgram::from_shader(gpu, wgsl::emit(program))
+    }
+
+    /// Like [`GpuProgram::from_program`], starting a new stage after `statements` statements whatever the
+    /// program's length (`usize::MAX` for one shader).
+    pub fn from_program_staged(gpu: &Gpu, program: &TensorProgram, statements: usize) -> Result<GpuProgram, GpuError> {
+        GpuProgram::from_shader(gpu, wgsl::emit_staged(program, statements))
+    }
+
+    fn from_shader(gpu: &Gpu, shader: wgsl::Shader) -> Result<GpuProgram, GpuError> {
         let device = &gpu.device;
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("handwired program"),
-            source: wgpu::ShaderSource::Wgsl(shader.code.as_str().into()),
-        });
         // An explicit layout, since an automatic one drops bindings the shader doesn't read, e.g. empty tables.
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
             binding,
@@ -140,6 +148,7 @@ impl GpuProgram {
                 entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
                 entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
                 entry(3, wgpu::BufferBindingType::Storage { read_only: false }),
+                entry(4, wgpu::BufferBindingType::Storage { read_only: false }),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -147,14 +156,40 @@ impl GpuProgram {
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("handwired program"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
+        // Stages compile on every core: the driver's time per stage is the setup time. wgpu 25's error scopes
+        // belong to the device, so this one collects the errors of every thread.
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let threads = std::thread::available_parallelism().map_or(1, |count| count.get()).min(shader.stages.len());
+        let mut compiled: Vec<(usize, wgpu::ComputePipeline)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut pipelines = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(code) = shader.stages.get(index) else { return pipelines };
+                            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                                label: Some("handwired stage"),
+                                source: wgpu::ShaderSource::Wgsl(code.as_str().into()),
+                            });
+                            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                                label: Some("handwired stage"),
+                                layout: Some(&pipeline_layout),
+                                module: &module,
+                                entry_point: Some("main"),
+                                compilation_options: Default::default(),
+                                cache: None,
+                            });
+                            pipelines.push((index, pipeline));
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect()
         });
+        compiled.sort_by_key(|&(index, _)| index);
+        let pipelines = compiled.into_iter().map(|(_, pipeline)| pipeline).collect();
         if let Some(error) = pollster::block_on(device.pop_error_scope()) {
             return Err(GpuError::Shader(error.to_string()));
         }
@@ -166,13 +201,14 @@ impl GpuProgram {
             usage: wgpu::BufferUsages::STORAGE,
         });
         Ok(GpuProgram {
-            pipeline,
+            pipelines,
             bind_group_layout,
             tables,
             source_size: shader.source_size,
             output_count: shader.output_count,
             operation_count: shader.operation_count,
-            wgsl: shader.code,
+            carried: shader.carried,
+            stages: shader.stages,
         })
     }
 
@@ -186,6 +222,19 @@ impl GpuProgram {
                 self.source_size
             )));
         }
+        // Each dispatch's buffers must fit in one storage binding; the carried cells are usually the largest.
+        let limits = gpu.device.limits();
+        let binding = (limits.max_storage_buffer_binding_size as u64).min(limits.max_buffer_size);
+        let cells = self.source_size.max(self.output_count).max(self.carried).max(1) as u64;
+        let per_dispatch = (binding / (cells * 4)).max(1) as usize;
+        let mut values = Vec::with_capacity(sources.len() / self.source_size * self.output_count);
+        for part in sources.chunks(per_dispatch * self.source_size) {
+            values.extend(self.dispatch(gpu, part)?);
+        }
+        Ok(values)
+    }
+
+    fn dispatch(&self, gpu: &Gpu, sources: &[f32]) -> Result<Vec<f32>, GpuError> {
         let records = sources.len() / self.source_size;
         let device = &gpu.device;
         let workgroups = (records as u32).div_ceil(wgsl::WORKGROUP_SIZE);
@@ -210,6 +259,12 @@ impl GpuProgram {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let carry = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("handwired carried values"),
+            size: (records * self.carried.max(1) * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("handwired readback"),
             size: output_size,
@@ -224,16 +279,20 @@ impl GpuProgram {
                 wgpu::BindGroupEntry { binding: 1, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.tables.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: outputs.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: carry.as_entire_binding() },
             ],
         });
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("handwired run") });
         {
+            // wgpu orders each dispatch's storage writes before the next dispatch's reads.
             let mut pass = encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("handwired"), timestamp_writes: None });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(width, height, 1);
+            for pipeline in &self.pipelines {
+                pass.set_pipeline(pipeline);
+                pass.dispatch_workgroups(width, height, 1);
+            }
         }
         encoder.copy_buffer_to_buffer(&outputs, 0, &readback, 0, output_size);
         gpu.queue.submit([encoder.finish()]);
@@ -264,10 +323,19 @@ pub struct GpuBatch<Args, R> {
 
 impl<Args: Params, R: HwType> GpuBatch<Args, R> {
     pub fn new(gpu: &Gpu, compiled: &Compiled<Args, R>) -> Result<GpuBatch<Args, R>, GpuError> {
-        let program = GpuProgram::from_program(gpu, &compiled.program)?;
+        Ok(GpuBatch::with_program(compiled, GpuProgram::from_program(gpu, &compiled.program)?))
+    }
+
+    /// Like [`GpuBatch::new`], starting a new shader stage after `statements` statements (`usize::MAX` for one
+    /// shader).
+    pub fn staged(gpu: &Gpu, compiled: &Compiled<Args, R>, statements: usize) -> Result<GpuBatch<Args, R>, GpuError> {
+        Ok(GpuBatch::with_program(compiled, GpuProgram::from_program_staged(gpu, &compiled.program, statements)?))
+    }
+
+    fn with_program(compiled: &Compiled<Args, R>, program: GpuProgram) -> GpuBatch<Args, R> {
         let circuit = &compiled.circuit;
         let source_ranges = (0..circuit.source_size()).map(|cell| circuit.range(circuit.source(cell))).collect();
-        Ok(GpuBatch { program, source_ranges, marker: PhantomData })
+        GpuBatch { program, source_ranges, marker: PhantomData }
     }
 
     /// The source tables for `records`, checked against the declared ranges.

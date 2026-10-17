@@ -1,8 +1,8 @@
 //! The GPU reproduces the CPU reference evaluator bit for bit.
 
 use handwired_rs::{
-    Circuit, CompareOptions, CompileOptions, Lin, OutOfRange, Relation, Wire, emit_argmax, emit_compare_with,
-    emit_first_active, handwired,
+    Circuit, CompareOptions, CompileOptions, Lin, OutOfRange, Relation, TensorProgram, Wire, emit_argmax,
+    emit_compare_with, emit_first_active, handwired,
 };
 use handwired_rs_gpu::{Gpu, GpuBatch, GpuProgram};
 
@@ -40,17 +40,33 @@ fn gpu() -> Option<Gpu> {
     }
 }
 
-/// Run `records` on the GPU and check every root against the reference evaluator.
+/// Statements per stage in the split runs: a new shader every few statements, so every kind of operation reads
+/// values carried from earlier stages.
+const SPLIT: usize = 5;
+
+/// The program as the default stages and split every [`SPLIT`] statements.
+fn programs(gpu: &Gpu, program: &TensorProgram) -> [GpuProgram; 2] {
+    [GpuProgram::from_program(gpu, program).unwrap(), GpuProgram::from_program_staged(gpu, program, SPLIT).unwrap()]
+}
+
+/// Run `records` on the GPU, whole and split into stages, and check every root against the reference evaluator.
 fn check(gpu: &Gpu, circuit: &Circuit, roots: &[Wire], records: &[Vec<f32>]) {
-    let program = GpuProgram::new(gpu, circuit, roots).unwrap();
     let sources: Vec<f32> = records.concat();
-    let outputs = program.run(gpu, &sources).unwrap();
-    for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
-        let values = circuit.evaluate_reference(record).unwrap();
-        for (root, &got) in roots.iter().zip(got) {
-            let want = values[root.index()];
-            // == treats -0 and +0 as equal, like handwired's checks.
-            assert!(got == want, "wire {} for {record:?}: GPU {got:e}, CPU {want:e}\n{}", root.index(), program.wgsl);
+    for program in programs(gpu, &circuit.compile(Some(roots))) {
+        let outputs = program.run(gpu, &sources).unwrap();
+        for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
+            let values = circuit.evaluate_reference(record).unwrap();
+            for (root, &got) in roots.iter().zip(got) {
+                let want = values[root.index()];
+                // == treats -0 and +0 as equal, like handwired's checks.
+                assert!(
+                    got == want,
+                    "wire {} for {record:?} in {} stages: GPU {got:e}, CPU {want:e}\n{}",
+                    root.index(),
+                    program.stages.len(),
+                    program.stages.join("\n// ----\n")
+                );
+            }
         }
     }
 }
@@ -356,18 +372,19 @@ fn gathers_match_the_reference() {
                 record
             })
             .collect();
-        let gpu_program = GpuProgram::from_program(&gpu, &program).unwrap();
-        let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
-        for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
-            let values = circuit.evaluate_reference(record).unwrap();
-            for (root, &got) in roots.iter().zip(got) {
-                let want = values[root.index()];
-                assert!(
-                    got == want,
-                    "wire {} for {record:?}: GPU {got:e}, CPU {want:e}\n{}",
-                    root.index(),
-                    gpu_program.wgsl
-                );
+        for gpu_program in programs(&gpu, &program) {
+            let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
+            for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
+                let values = circuit.evaluate_reference(record).unwrap();
+                for (root, &got) in roots.iter().zip(got) {
+                    let want = values[root.index()];
+                    assert!(
+                        got == want,
+                        "wire {} for {record:?}: GPU {got:e}, CPU {want:e}\n{}",
+                        root.index(),
+                        gpu_program.stages.join("\n// ----\n")
+                    );
+                }
             }
         }
     }
@@ -432,12 +449,18 @@ fn selection_trees_match_the_reference() {
             record
         })
         .collect();
-    let gpu_program = GpuProgram::from_program(&gpu, &program).unwrap();
-    let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
-    for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
-        let values = circuit.evaluate_reference(record).unwrap();
-        for (root, &got) in roots.iter().zip(got) {
-            assert!(got == values[root.index()], "wire {}: GPU {got:e}, CPU {:e}", root.index(), values[root.index()]);
+    for gpu_program in programs(&gpu, &program) {
+        let outputs = gpu_program.run(&gpu, &records.concat()).unwrap();
+        for (record, got) in records.iter().zip(outputs.chunks(roots.len())) {
+            let values = circuit.evaluate_reference(record).unwrap();
+            for (root, &got) in roots.iter().zip(got) {
+                assert!(
+                    got == values[root.index()],
+                    "wire {}: GPU {got:e}, CPU {:e}",
+                    root.index(),
+                    values[root.index()]
+                );
+            }
         }
     }
 }
@@ -464,7 +487,8 @@ fn vote(tally: Tally, #[range(0, 2)] choice: u8) -> Tally {
 #[test]
 fn struct_batches_match_the_function() {
     let Some(gpu) = gpu() else { return };
-    let batch = GpuBatch::new(&gpu, &vote_circuit()).unwrap();
+    let compiled = vote_circuit();
+    let batches = [GpuBatch::new(&gpu, &compiled).unwrap(), GpuBatch::staged(&gpu, &compiled, SPLIT).unwrap()];
     let mut rng = Rng(5);
     let records: Vec<(Tally, u8)> = (0..4096)
         .map(|_| {
@@ -472,8 +496,10 @@ fn struct_batches_match_the_function() {
             (tally, rng.below(3) as u8)
         })
         .collect();
-    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
-        assert_eq!(result, vote(record.0, record.1), "{record:?}");
+    for batch in &batches {
+        for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+            assert_eq!(result, vote(record.0, record.1), "{record:?}");
+        }
     }
 }
 
@@ -503,20 +529,22 @@ fn scramble(state: u16, byte: u8, #[range(0, 7)] amount: u8, mode: Mode) -> (u16
 #[test]
 fn bitwise_and_enum_batches_match_the_function() {
     let Some(gpu) = gpu() else { return };
-    let batch = GpuBatch::new(&gpu, &scramble_circuit()).unwrap();
+    let compiled = scramble_circuit();
+    let batches = [GpuBatch::new(&gpu, &compiled).unwrap(), GpuBatch::staged(&gpu, &compiled, SPLIT).unwrap()];
     let mut rng = Rng(9);
     let modes = [Mode::Mix, Mode::Mask, Mode::Shift];
     let records: Vec<(u16, u8, u8, Mode)> = (0..65_536u32)
         .map(|state| (state as u16, rng.below(256) as u8, rng.below(8) as u8, rng.pick(&modes)))
         .collect();
-    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
-        assert_eq!(result, scramble(record.0, record.1, record.2, record.3), "{record:?}");
+    for batch in &batches {
+        for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+            assert_eq!(result, scramble(record.0, record.1, record.2, record.3), "{record:?}");
+        }
     }
 }
 
 /// Integers beyond ±2^24, held as bytes: two FNV-1a steps (a multiply that carries through every byte) and a 64-bit
-/// mix with a rotate, a shift by an input amount, an add and a comparison. Small, since the shader is one statement
-/// per operation and its compile time grows quickly with the program.
+/// mix with a rotate, a shift by an input amount, an add and a comparison. Long enough to run as several stages.
 #[handwired]
 #[allow(clippy::needless_range_loop)]
 fn wide_hash(bytes: [u8; 8], #[range(0, 3)] amount: u8) -> ([u8; 4], [u8; 8], bool) {
@@ -541,6 +569,7 @@ fn wide_hash(bytes: [u8; 8], #[range(0, 3)] amount: u8) -> ([u8; 4], [u8; 8], bo
 fn wide_integer_batches_match_the_function() {
     let Some(gpu) = gpu() else { return };
     let batch = GpuBatch::new(&gpu, &wide_hash_circuit()).unwrap();
+    assert!(batch.program.stages.len() > 1, "{} stages", batch.program.stages.len());
     let mut rng = Rng(11);
     let records: Vec<([u8; 8], u8)> =
         (0..4096).map(|_| (std::array::from_fn(|_| rng.below(256) as u8), rng.below(4) as u8)).collect();

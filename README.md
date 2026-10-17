@@ -273,10 +273,19 @@ See [Limitations](#limitations) for what isn't supported.
 
 ## GPU: `handwired-rs-gpu`
 
-The `gpu/` crate runs a compiled program as one WebGPU compute shader (wgpu 25), one invocation per record, so a
-batch of records runs in parallel. It reproduces the CPU reference evaluator bit for bit. The shader is one
-statement per operation, and drivers compile long straight-line shaders slowly: a 1,131-operation program takes
-about 16 s to set up on RADV, so the GPU suits small and medium circuits for now.
+The `gpu/` crate runs a compiled program as WebGPU compute shaders (wgpu 25), one invocation per record, so a batch
+of records runs in parallel. It reproduces the CPU reference evaluator bit for bit.
+
+The shader code is straight-line, a few statements per operation, and Mesa's compile time grows much faster than the
+code (on RADV: 0.1 s for 1,200 statements, 6 s for 4,900, 17 s for 8,400). So a program of up to 2,000 statements is
+one shader, and a longer one is split into stages of about 250 statements that compile in parallel and run one after
+another. Each cut goes where few values cross it; the values later stages read go through a storage buffer, which
+costs run time. On RADV, a 1,131-operation wide hash sets up in 0.14 s instead of about 27 s as one shader, and runs
+262,144 records in 126 ms instead of 45 ms. SHA-1 (68,036 operations, [below](#two-larger-examples)) becomes 1,240
+stages that set up in 8 s, and hashes the 2,000 messages in about 0.3 s, measured with a GPU copy of the example.
+Mesa also caches compiled shaders on disk, so setting up the same program again is faster (2.6 s for SHA-1).
+`GpuBatch::staged` and `GpuProgram::from_program_staged` take another stage size: larger stages run faster and
+compile slower, and `usize::MAX` gives one shader.
 
 ```rust
 let gpu = handwired_rs_gpu::Gpu::new()?;
@@ -420,7 +429,9 @@ exactness, differentiability and a tensor-shaped program, not speed.
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
 closer than 2^-126 compare equal, matching handwired's `flushSubnormals` executor; anything else is exact. WGSL
-lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU.
+lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU. A program longer than 2,000
+statements runs as stages, which pass values through memory and run slower than one shader would (about 3x for the
+wide hash on an integrated GPU).
 
 **Differentiability.** The reference evaluator has an exact backward pass, on the CPU only.
 `compiled.gradients(&records, output, weights, options)` sums it over many records on every core, and the `balance`
@@ -484,8 +495,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   switch in plain Rust, over a scripted trace and random traces near the track edges.
 
 - `gpu/tests/exact.rs`: random circuits, comparisons at their edges, gathers over one-hot groups, selection trees and
-  `#[handwired]` batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), range
-  checks on batches, and comparisons of subnormal values, checked against the flushing model when the GPU flushes them.
+  `#[handwired]` batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), each run
+  with the default stages and again split every 5 statements, so every kind of operation reads values carried from
+  earlier stages; range checks on batches, and comparisons of subnormal values, checked against the
+  flushing model when the GPU flushes them.
 
 `cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
 toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262
