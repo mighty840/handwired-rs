@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-17): handwired-rs and handwired-rs-gpu 0.7.0
 
 - GPU stages pass integers within small ranges as only the bits their ranges need, packed into 32-bit words (the
   carried buffer is now `array<u32>`; other values pass as their f32 bits), and cuts count values in words: the wide
