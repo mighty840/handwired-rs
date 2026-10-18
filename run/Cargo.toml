@@ -1,0 +1,24 @@
+[package]
+name = "handwired-rs-run"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/mighty840/handwired-rs"
+keywords = ["circuit", "no-std", "embedded", "deterministic"]
+categories = ["no-std", "embedded", "science"]
+description = "Run exported handwired circuits: no_std, no allocation, no dependencies, bit-exact with the CPU reference"
+readme = "README.md"
+
+[features]
+default = []
+# Owned scratch and outputs.
+alloc = []
+# std::error::Error, and the handwired-run command.
+std = ["alloc"]
+
+[[bin]]
+name = "handwired-run"
+required-features = ["std"]
+
+[dev-dependencies]
+handwired-rs = { path = ".." }

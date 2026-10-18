@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- New crate handwired-rs-run 0.1.0: runs exported programs without handwired-rs. It is `no_std`, with no allocation,
+  dependencies or `unsafe`, and builds for Cortex-M0, Cortex-M4F/M7 and RV32IMC. It is bit-exact with
+  `TensorExecutor` on every value. It refuses inputs outside the declared ranges, and refuses damaged bytes at load
+  (checksum, then structure), so a run never reads out of bounds. With `std`, the `handwired-run` command runs a
+  program over records on standard input.
+- `Compiled::export(name)` and `TensorProgram::to_bytes(description)` write programs in that format (version 1,
+  described in `handwired_rs::export`): the source cells' declared ranges, the outputs' positions and the layers,
+  with a checksum.
 - `saturating_add` and `saturating_sub` on values held as bytes, and on one-wire values whose result may leave
   ±2^24: the wrapping result in bytes, or the limit it passed where it wrapped, found by comparing it with the left
   operand. They used to fail the build. Narrow circuits are unchanged.

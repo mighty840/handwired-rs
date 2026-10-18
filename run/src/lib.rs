@@ -1,0 +1,568 @@
+//! Run circuits exported by [handwired-rs](https://crates.io/crates/handwired-rs) (`Compiled::export` or
+//! `TensorProgram::to_bytes`) without it: `no_std`, no allocation, no dependencies, no `unsafe`. A program is its
+//! bytes, e.g. from `include_bytes!` or flash; [`Program::parse`] checks them once, and [`Program::run`] evaluates
+//! them into scratch memory the caller provides. Results are bit-exact with handwired-rs's CPU executor wherever f32
+//! arithmetic is IEEE 754, including software floating point on chips without an FPU.
+//!
+//! Every run does the same operations in the same order whatever the inputs, so its time depends only on the
+//! program (given arithmetic whose time doesn't depend on the values). Inputs outside the ranges the function
+//! declared are refused, since the circuit is only exact within them.
+//!
+//! ```
+//! # fn demo(bytes: &[u8]) -> Result<(), handwired_rs_run::Error> {
+//! use handwired_rs_run::Program;
+//!
+//! let program = Program::parse(bytes)?;
+//! let mut scratch = [0.0f32; 4096];
+//! let mut outputs = [0.0f32; 8];
+//! program.run(&[3.0, 1.0], &mut scratch[..program.scratch_len()], &mut outputs[..program.output_count()])?;
+//! # Ok(())
+//! # }
+//! ```
+
+#![no_std]
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+use core::fmt;
+
+/// The first 8 bytes of every program.
+pub const MAGIC: [u8; 8] = *b"HWCIRC\0\0";
+/// The format version this crate reads.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// Why a program can't be read or run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Error {
+    /// The bytes end before the program does.
+    Truncated,
+    /// The bytes don't start like a handwired program.
+    NotAProgram,
+    /// A format version this crate doesn't read.
+    UnsupportedVersion(u32),
+    /// The checksum doesn't match: the bytes changed after the program was exported.
+    Checksum,
+    /// The program's parts don't fit together, e.g. an operation reads a value computed after it.
+    Malformed(&'static str),
+    /// The number of input cells isn't the program's.
+    InputLength {
+        /// The program's input cells.
+        expected: usize,
+        /// The cells given.
+        actual: usize,
+    },
+    /// An input cell is outside the range the function declared for it, where the circuit isn't exact.
+    InputOutOfRange {
+        /// Which cell.
+        index: usize,
+        /// Its value.
+        value: f32,
+    },
+    /// The scratch memory is smaller than [`Program::scratch_len`].
+    ScratchTooSmall {
+        /// The cells needed.
+        needed: usize,
+        /// The cells given.
+        actual: usize,
+    },
+    /// The number of output cells isn't the program's.
+    OutputLength {
+        /// The program's output cells.
+        expected: usize,
+        /// The cells given.
+        actual: usize,
+    },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Truncated => write!(f, "the program's bytes end early"),
+            Error::NotAProgram => write!(f, "not a handwired program"),
+            Error::UnsupportedVersion(version) => {
+                write!(f, "program format version {version}; this runner reads version {FORMAT_VERSION}")
+            }
+            Error::Checksum => write!(f, "the program's checksum doesn't match its bytes"),
+            Error::Malformed(what) => write!(f, "malformed program: {what}"),
+            Error::InputLength { expected, actual } => write!(f, "{actual} input cells for a program of {expected}"),
+            Error::InputOutOfRange { index, value } => {
+                write!(f, "input cell {index} is {value}, outside the range its function declared")
+            }
+            Error::ScratchTooSmall { needed, actual } => {
+                write!(f, "{actual} scratch cells; the program needs {needed}")
+            }
+            Error::OutputLength { expected, actual } => {
+                write!(f, "{actual} output cells for a program of {expected}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}
+
+/// FNV-1a over `bytes`, the format's checksum.
+pub fn checksum(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811C_9DC5u32, |hash, &byte| (hash ^ byte as u32).wrapping_mul(0x0100_0193))
+}
+
+/// Reads the format's little-endian words, refusing to read past the end.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, length: usize) -> Result<&'a [u8], Error> {
+        let end = self.at.checked_add(length).ok_or(Error::Truncated)?;
+        let taken = self.bytes.get(self.at..end).ok_or(Error::Truncated)?;
+        self.at = end;
+        Ok(taken)
+    }
+
+    fn u32(&mut self) -> Result<u32, Error> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn count(&mut self) -> Result<usize, Error> {
+        Ok(self.u32()? as usize)
+    }
+
+    /// The offset of `count` words, skipped.
+    fn words(&mut self, count: usize) -> Result<usize, Error> {
+        let at = self.at;
+        self.take(count.checked_mul(4).ok_or(Error::Truncated)?)?;
+        Ok(at)
+    }
+}
+
+fn word(bytes: &[u8], at: usize) -> u32 {
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(&bytes[at..at + 4]);
+    u32::from_le_bytes(raw)
+}
+
+fn word_at(bytes: &[u8], base: usize, index: usize) -> u32 {
+    word(bytes, base + 4 * index)
+}
+
+fn float_at(bytes: &[u8], base: usize, index: usize) -> f32 {
+    f32::from_bits(word_at(bytes, base, index))
+}
+
+fn f64_at(bytes: &[u8], at: usize) -> f64 {
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&bytes[at..at + 8]);
+    f64::from_le_bytes(raw)
+}
+
+/// Where one layer's parts are.
+#[derive(Clone, Copy)]
+struct Layer {
+    output_size: usize,
+    rows: usize,
+    entries: usize,
+    bias: usize,
+    offsets: usize,
+    positions: usize,
+    weights: usize,
+    gates: (usize, usize),
+    booleans: (usize, usize),
+    computes: (usize, usize),
+    gather_reads: (usize, usize),
+    index_reads: (usize, usize),
+}
+
+impl Layer {
+    /// The layer at the reader, which it moves past. Only the sizes are read here; [`check`] checks the contents.
+    fn read(reader: &mut Reader) -> Result<Layer, Error> {
+        let output_size = reader.count()?;
+        let rows = reader.count()?;
+        let entries = reader.count()?;
+        let gate_count = reader.count()?;
+        let boolean_count = reader.count()?;
+        let compute_count = reader.count()?;
+        let gather_read_count = reader.count()?;
+        let index_read_count = reader.count()?;
+        let bias = reader.words(rows)?;
+        let offsets = reader.words(rows.checked_add(1).ok_or(Error::Truncated)?)?;
+        let positions = reader.words(entries)?;
+        let weights = reader.words(entries)?;
+        let gates = (reader.words(gate_count)?, gate_count);
+        let booleans = (reader.words(boolean_count)?, boolean_count);
+        let computes = (reader.at, compute_count);
+        for _ in 0..compute_count {
+            reader.u32()?;
+            let count = reader.count()?;
+            reader.words(count)?;
+        }
+        let gather_reads = (reader.at, gather_read_count);
+        for _ in 0..gather_read_count {
+            reader.words(3)?;
+            let count = reader.count()?;
+            reader.words(count)?;
+        }
+        let index_reads = (reader.at, index_read_count);
+        for _ in 0..index_read_count {
+            reader.words(3)?;
+            let count = reader.count()?;
+            reader.words(count)?;
+        }
+        Ok(Layer {
+            output_size,
+            rows,
+            entries,
+            bias,
+            offsets,
+            positions,
+            weights,
+            gates,
+            booleans,
+            computes,
+            gather_reads,
+            index_reads,
+        })
+    }
+}
+
+/// A check of one layer against the values before it: everything [`Program::run`] indexes is in bounds.
+fn check(bytes: &[u8], layer: &Layer, available: usize, gather_slots: usize) -> Result<(), Error> {
+    let fail = Error::Malformed;
+    if layer.output_size.checked_add(layer.gates.1).is_none_or(|needed| needed > layer.rows) {
+        return Err(fail("a layer has fewer rows than its outputs and gates"));
+    }
+    let entries = layer.entries;
+    let mut previous = 0;
+    for row in 0..=layer.rows {
+        let offset = word_at(bytes, layer.offsets, row) as usize;
+        if offset < previous || offset > entries {
+            return Err(fail("a layer's row offsets aren't in order within its entries"));
+        }
+        previous = offset;
+    }
+    if previous != entries {
+        return Err(fail("a layer's row offsets don't end at its entries"));
+    }
+    for entry in 0..entries {
+        if word_at(bytes, layer.positions, entry) as usize >= available {
+            return Err(fail("a layer reads a value computed after it"));
+        }
+    }
+    for (base, count) in [layer.gates, layer.booleans] {
+        for index in 0..count {
+            if word_at(bytes, base, index) as usize >= layer.rows {
+                return Err(fail("a gate or boolean names a row the layer doesn't have"));
+            }
+        }
+    }
+    let positions = |at: usize, count: usize| -> Result<(), Error> {
+        for index in 0..count {
+            if word_at(bytes, at, index) as usize >= available {
+                return Err(fail("a read names a value computed after it"));
+            }
+        }
+        Ok(())
+    };
+    let mut at = layer.computes.0;
+    for _ in 0..layer.computes.1 {
+        if word(bytes, at) as usize >= gather_slots {
+            return Err(fail("a gather names a slot the program doesn't have"));
+        }
+        let count = word(bytes, at + 4) as usize;
+        positions(at + 8, count)?;
+        at += 8 + 4 * count;
+    }
+    let mut at = layer.gather_reads.0;
+    for _ in 0..layer.gather_reads.1 {
+        let (row, slot, masked) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
+        let count = word(bytes, at + 12) as usize;
+        if row >= layer.rows || slot >= gather_slots || masked > 1 || count == 0 {
+            return Err(fail("a gather read names a row or slot the layer doesn't have, or no candidates"));
+        }
+        positions(at + 16, count)?;
+        at += 16 + 4 * count;
+    }
+    let mut at = layer.index_reads.0;
+    for _ in 0..layer.index_reads.1 {
+        let (row, index_row, flags) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
+        let count = word(bytes, at + 12) as usize;
+        if row >= layer.rows || index_row >= layer.rows || flags > 3 || count == 0 {
+            return Err(fail("an index read names a row the layer doesn't have, or no candidates"));
+        }
+        positions(at + 16, count)?;
+        at += 16 + 4 * count;
+    }
+    Ok(())
+}
+
+/// A program checked by [`Program::parse`], borrowing its bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct Program<'a> {
+    bytes: &'a [u8],
+    description: &'a str,
+    source_size: usize,
+    value_count: usize,
+    gather_slots: usize,
+    root_count: usize,
+    layer_count: usize,
+    sources: usize,
+    roots: usize,
+    layers: usize,
+    max_rows: usize,
+}
+
+impl<'a> Program<'a> {
+    /// Check a program's bytes: the magic, the version, the checksum, and that every operation reads only values
+    /// computed before it, so [`Program::run`] stays in bounds.
+    pub fn parse(bytes: &'a [u8]) -> Result<Program<'a>, Error> {
+        if bytes.len() < MAGIC.len() {
+            return Err(if MAGIC.starts_with(bytes) { Error::Truncated } else { Error::NotAProgram });
+        }
+        if bytes[..MAGIC.len()] != MAGIC {
+            return Err(Error::NotAProgram);
+        }
+        let mut reader = Reader { bytes, at: MAGIC.len() };
+        let version = reader.u32()?;
+        if version != FORMAT_VERSION {
+            return Err(Error::UnsupportedVersion(version));
+        }
+        let Some(body_length) = bytes.len().checked_sub(4).filter(|&length| length >= reader.at) else {
+            return Err(Error::Truncated);
+        };
+        if checksum(&bytes[..body_length]) != word(bytes, body_length) {
+            return Err(Error::Checksum);
+        }
+        let mut reader = Reader { bytes: &bytes[..body_length], at: reader.at };
+        let description_length = reader.count()?;
+        let description = core::str::from_utf8(reader.take(description_length)?)
+            .map_err(|_| Error::Malformed("the description isn't UTF-8"))?;
+        let source_size = reader.count()?;
+        let value_count = reader.count()?;
+        let gather_slots = reader.count()?;
+        let root_count = reader.count()?;
+        let layer_count = reader.count()?;
+        let sources = reader.words(source_size.checked_mul(4).ok_or(Error::Truncated)?)?;
+        let roots = reader.words(root_count)?;
+        for index in 0..root_count {
+            if word_at(bytes, roots, index) as usize >= value_count {
+                return Err(Error::Malformed("an output names a value the program doesn't have"));
+            }
+        }
+        if source_size > value_count {
+            return Err(Error::Malformed("more sources than values"));
+        }
+        let layers = reader.at;
+        let mut available = source_size;
+        let mut max_rows = 0;
+        for _ in 0..layer_count {
+            let layer = Layer::read(&mut reader)?;
+            check(bytes, &layer, available, gather_slots)?;
+            available = available
+                .checked_add(layer.output_size)
+                .filter(|&count| count <= value_count)
+                .ok_or(Error::Malformed("the layers make more values than the program has"))?;
+            max_rows = max_rows.max(layer.rows);
+        }
+        if available != value_count {
+            return Err(Error::Malformed("the layers make fewer values than the program has"));
+        }
+        if reader.at != body_length {
+            return Err(Error::Malformed("bytes after the last layer"));
+        }
+        // The scratch length must fit in a usize.
+        value_count
+            .checked_add(max_rows)
+            .and_then(|length| length.checked_add(gather_slots.checked_mul(2)?))
+            .ok_or(Error::Malformed("the program needs more scratch than memory holds"))?;
+        Ok(Program {
+            bytes: &bytes[..body_length],
+            description,
+            source_size,
+            value_count,
+            gather_slots,
+            root_count,
+            layer_count,
+            sources,
+            roots,
+            layers,
+            max_rows,
+        })
+    }
+
+    /// What the exporter wrote about the program, e.g. its function's name and signature.
+    pub fn description(&self) -> &'a str {
+        self.description
+    }
+
+    /// The number of input cells, the parameters' cells in order.
+    pub fn input_count(&self) -> usize {
+        self.source_size
+    }
+
+    /// The number of output cells, the result's cells in order.
+    pub fn output_count(&self) -> usize {
+        self.root_count
+    }
+
+    /// The number of layers, each a dependent step: the program's depth.
+    pub fn layer_count(&self) -> usize {
+        self.layer_count
+    }
+
+    /// The number of values a run computes, the input cells included.
+    pub fn value_count(&self) -> usize {
+        self.value_count
+    }
+
+    /// The range declared for input cell `index`, inclusive.
+    pub fn input_range(&self, index: usize) -> Option<(f64, f64)> {
+        (index < self.source_size).then(|| {
+            let at = self.sources + 16 * index;
+            (f64_at(self.bytes, at), f64_at(self.bytes, at + 8))
+        })
+    }
+
+    /// The f32 cells of scratch memory [`Program::run`] needs.
+    pub fn scratch_len(&self) -> usize {
+        self.value_count + self.max_rows + 2 * self.gather_slots
+    }
+
+    /// Evaluate the program on `inputs`, writing its outputs. `scratch` holds at least [`Program::scratch_len`]
+    /// cells; afterwards its first [`Program::value_count`] cells hold every value the run computed, in program
+    /// order. Inputs outside their declared ranges are refused.
+    pub fn run(&self, inputs: &[f32], scratch: &mut [f32], outputs: &mut [f32]) -> Result<(), Error> {
+        if inputs.len() != self.source_size {
+            return Err(Error::InputLength { expected: self.source_size, actual: inputs.len() });
+        }
+        if scratch.len() < self.scratch_len() {
+            return Err(Error::ScratchTooSmall { needed: self.scratch_len(), actual: scratch.len() });
+        }
+        if outputs.len() != self.root_count {
+            return Err(Error::OutputLength { expected: self.root_count, actual: outputs.len() });
+        }
+        for (index, &value) in inputs.iter().enumerate() {
+            let (low, high) = self.input_range(index).unwrap_or((f64::NAN, f64::NAN));
+            let wide = value as f64;
+            if !(wide >= low && wide <= high) {
+                return Err(Error::InputOutOfRange { index, value });
+            }
+        }
+        let bytes = self.bytes;
+        let (values, rest) = scratch.split_at_mut(self.value_count);
+        let (projection, rest) = rest.split_at_mut(self.max_rows);
+        let (gather_indices, rest) = rest.split_at_mut(self.gather_slots);
+        let gather_masses = &mut rest[..self.gather_slots];
+        gather_indices.fill(0.0);
+        gather_masses.fill(0.0);
+        values[..inputs.len()].copy_from_slice(inputs);
+        let mut available = inputs.len();
+        let mut reader = Reader { bytes, at: self.layers };
+        for _ in 0..self.layer_count {
+            let Ok(layer) = Layer::read(&mut reader) else { unreachable!("parse checked every layer") };
+            let projection = &mut projection[..layer.rows];
+            // One sum per row, its entries in stored order.
+            for (row, output) in projection.iter_mut().enumerate() {
+                let mut value = float_at(bytes, layer.bias, row);
+                let (start, end) = (word_at(bytes, layer.offsets, row), word_at(bytes, layer.offsets, row + 1));
+                for entry in start as usize..end as usize {
+                    let input = values[word_at(bytes, layer.positions, entry) as usize];
+                    value += float_at(bytes, layer.weights, entry) * input;
+                }
+                *output = value;
+            }
+            // A one-hot group's selected position and its sum of bits; the position is kept as an i32's bits.
+            let mut at = layer.computes.0;
+            for _ in 0..layer.computes.1 {
+                let slot = word(bytes, at) as usize;
+                let count = word(bytes, at + 4) as usize;
+                let (mut index, mut mass) = (0f64, 0f64);
+                for position in 0..count {
+                    let bit = values[word_at(bytes, at + 8, position) as usize] as f64;
+                    index += position as f64 * bit;
+                    mass += bit;
+                }
+                gather_indices[slot] = f32::from_bits(index as i32 as u32);
+                gather_masses[slot] = mass as f32;
+                at += 8 + 4 * count;
+            }
+            let mut at = layer.gather_reads.0;
+            for _ in 0..layer.gather_reads.1 {
+                let (row, slot, masked) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
+                let count = word(bytes, at + 12) as usize;
+                let index = (gather_indices[slot].to_bits() as i32).clamp(0, count as i32 - 1) as usize;
+                let candidate = values[word_at(bytes, at + 16, index) as usize];
+                projection[row] += if masked == 1 { gather_masses[slot] * candidate } else { candidate };
+                at += 16 + 4 * count;
+            }
+            // A table read at a row's value: the floor of the index picks the candidate; outside the table, 0 or
+            // the nearest end.
+            let mut at = layer.index_reads.0;
+            for _ in 0..layer.index_reads.1 {
+                let (row, index_row, flags) =
+                    (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
+                let count = word(bytes, at + 12) as usize;
+                let index = projection[index_row] as f64;
+                let position = if index < 0.0 {
+                    (flags & 1 == 0).then_some(0)
+                } else if index >= count as f64 {
+                    (flags & 2 == 0).then_some(count - 1)
+                } else {
+                    Some(index as usize)
+                };
+                projection[row] = match position {
+                    _ if index.is_nan() => f32::NAN,
+                    Some(position) => values[word_at(bytes, at + 16, position) as usize],
+                    None => 0.0,
+                };
+                at += 16 + 4 * count;
+            }
+            for gate in 0..layer.gates.1 {
+                let row = word_at(bytes, layer.gates.0, gate) as usize;
+                projection[row] *= relu(projection[layer.output_size + gate]);
+            }
+            for boolean in 0..layer.booleans.1 {
+                let row = word_at(bytes, layer.booleans.0, boolean) as usize;
+                projection[row] = round_boolean(projection[row]);
+            }
+            values[available..available + layer.output_size].copy_from_slice(&projection[..layer.output_size]);
+            available += layer.output_size;
+        }
+        for (index, output) in outputs.iter_mut().enumerate() {
+            *output = values[word_at(bytes, self.roots, index) as usize];
+        }
+        Ok(())
+    }
+
+    /// [`Program::run`] with scratch and outputs of its own.
+    #[cfg(feature = "alloc")]
+    pub fn evaluate(&self, inputs: &[f32]) -> Result<alloc::vec::Vec<f32>, Error> {
+        let mut scratch = alloc::vec![0.0; self.scratch_len()];
+        let mut outputs = alloc::vec![0.0; self.root_count];
+        self.run(inputs, &mut scratch, &mut outputs)?;
+        Ok(outputs)
+    }
+}
+
+/// `max(0, value)`, keeping NaN.
+fn relu(value: f32) -> f32 {
+    if value > 0.0 {
+        value
+    } else if value.is_nan() {
+        f32::NAN
+    } else {
+        0.0
+    }
+}
+
+/// A score within 0..1 rounded to 0 below 0.5 and 1 from 0.5: `(score + 8,388,609) - 8,388,609` in f32.
+fn round_boolean(score: f32) -> f32 {
+    const BASE: f32 = 8_388_609.0;
+    (score + BASE) - BASE
+}

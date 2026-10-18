@@ -506,6 +506,19 @@ fn install_quiet_hook() {
 }
 
 impl<Args: Params + Clone + Debug, R: HwType + PartialEq + Debug> Compiled<Args, R> {
+    /// The compiled program as bytes for `handwired-rs-run` ([`TensorProgram::to_bytes`]), described by `name`, the
+    /// parameter and result types, and this crate's version. The inputs are the parameters' cells in
+    /// [`HwType::encode`] order, and the outputs the result's.
+    pub fn export(&self, name: &str) -> Vec<u8> {
+        let description = format!(
+            "{name}\nparameters: {}\nresult: {}\nbuilt by handwired-rs {}",
+            std::any::type_name::<Args>(),
+            std::any::type_name::<R>(),
+            env!("CARGO_PKG_VERSION"),
+        );
+        self.program.to_bytes(&description)
+    }
+
     /// Build the circuit: `body` declares the parameters and returns the outputs.
     pub fn build(oracle: fn(Args) -> R, attrs: &'static [Attrs], body: impl FnOnce(&mut Inputs) -> R::Val) -> Self {
         let previous = CONTEXT.with(|context| context.replace(Some(Circuit::new(Args::CELLS))));

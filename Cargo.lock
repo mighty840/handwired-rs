@@ -345,6 +345,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "handwired-rs-run"
+version = "0.1.0"
+dependencies = [
+ "handwired-rs",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

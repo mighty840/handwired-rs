@@ -27,6 +27,8 @@ jobs:
         run: cargo test --workspace
       - name: Test without overflow checks (release)
         run: cargo test --workspace --release
+      - name: Test the runner with std (the handwired-run command)
+        run: cargo test -p handwired-rs-run --features std
       - name: Run the 100,000-record search example
         run: cargo run --release -p handwired-rs-gpu --example search
       - name: Run the key-value store example
@@ -54,6 +56,24 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (the runner with std)
+        run: cargo clippy -p handwired-rs-run --all-targets --features std -- -D warnings
+
+  embedded:
+    name: Build the runner for microcontrollers (no_std)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Cortex-M0 without an FPU (software floats), Cortex-M4F/M7 with one, and RISC-V without one.
+          targets: thumbv6m-none-eabi, thumbv7em-none-eabihf, riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          for target in thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imc-unknown-none-elf; do
+            cargo build -p handwired-rs-run --lib --release --target "$target"
+          done
 
   package:
     name: Package the macro crate
@@ -63,4 +83,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Package
         # handwired-rs and handwired-rs-gpu depend on it, so they can only be packaged once it's published.
-        run: cargo package -p handwired-rs-macros
+        run: |
+          cargo package -p handwired-rs-macros
+          cargo package -p handwired-rs-run

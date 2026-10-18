@@ -14,6 +14,7 @@ published numbers.
 ```sh
 cargo add handwired-rs            # the circuit builder, #[handwired] and the CPU executors
 cargo add handwired-rs-gpu        # optional: run compiled programs on a GPU through wgpu
+cargo add handwired-rs-run        # optional: run exported programs anywhere, no_std, without handwired-rs
 ```
 
 **Status:** 0.8, experimental, checked by the tests listed below on one machine and in CI. Read
@@ -405,6 +406,21 @@ against 6.6 ms for the plain function).
 The circuit form doesn't make a program like this faster than native Rust; what it adds is that the same exact
 program is a stack of sparse matrix multiplications with ReLUs, which runs on tensor hardware and is differentiable.
 Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests skip when there is none.
+
+## Embedded and elsewhere: `handwired-rs-run`
+
+`compiled.export("name")` (or `TensorProgram::to_bytes`) writes a compiled program as bytes. The
+[`handwired-rs-run`](run/README.md) crate runs them without handwired-rs: it is `no_std`, has no dependencies or
+allocation, and builds for microcontrollers with and without an FPU. Business logic written as a `#[handwired]`
+function and checked with `verify()` then ships to a device as a file:
+
+- every run takes the same operations whatever the inputs;
+- results are bit-exact with the CPU executor wherever f32 arithmetic is IEEE 754;
+- the file's hash says which logic ran.
+
+Inputs outside the declared ranges and damaged files are refused. With its `std` feature it adds `handwired-run`, a
+command that runs a program over records on standard input. A run costs about 1.3x the CPU executor. On
+microcontrollers it is so far only built, not run.
 
 ## Two larger examples
 

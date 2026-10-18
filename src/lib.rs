@@ -34,6 +34,7 @@ mod cells;
 mod circuit;
 pub mod dsl;
 mod emit;
+pub mod export;
 mod gather;
 mod inline;
 mod numeric;
@@ -54,6 +55,7 @@ pub use emit::{
     emit_first_active, emit_maximum, emit_maximum_exact, emit_minimum, emit_minimum_exact, emit_not, emit_or,
     emit_relu, emit_round, emit_select, is_proven_bit,
 };
+pub use export::{PROGRAM_FORMAT_VERSION, PROGRAM_MAGIC, program_checksum};
 pub use handwired_rs_macros::handwired;
 pub use numeric::Range;
 pub use prefix::{brent_kung_prefix, sklansky_prefix};
