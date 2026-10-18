@@ -26,6 +26,8 @@ local_conf_header:
     IMAGE_FEATURES:append = " ssh-server-dropbear"
   testimage: |
     IMAGE_CLASSES:append = " testimage"
+    # The tests log in over SSH as root with no password, which scarthgap images refuse without this.
+    EXTRA_IMAGE_FEATURES:append = " debug-tweaks"
     TEST_SUITES = "ping ssh handwired"
     TEST_RUNQEMUPARAMS += " slirp"
     TEST_QEMUBOOT_TIMEOUT = "1500"
