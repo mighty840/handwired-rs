@@ -16,7 +16,7 @@ cargo add handwired-rs            # the circuit builder, #[handwired] and the CP
 cargo add handwired-rs-gpu        # optional: run compiled programs on a GPU through wgpu
 ```
 
-**Status:** 0.7, experimental, checked by the tests listed below on one machine and in CI. Read
+**Status:** 0.8, experimental, checked by the tests listed below on one machine and in CI. Read
 [Limitations](#limitations) before relying on it.
 
 ```rust

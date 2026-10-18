@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-10-18): handwired-rs and handwired-rs-gpu 0.8.0, handwired-rs-macros 0.5.0
 
 - `<`, `<=`, `>`, `>=`, `min`, `max` and `clamp` on `Option`, `Result` and enums with data, in the order Rust derives:
   the variant in declaration order, then its fields in order. Comparing two native values of such an enum no longer
