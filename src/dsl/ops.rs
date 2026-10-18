@@ -582,29 +582,66 @@ impl<T: Num> Val<T> {
         Some((wide::limbs_as::<T, T>(self), wide::limbs_as::<T, T>(other)))
     }
 
+    /// Integers only: `self + other` held at the type's limits. A sum that may leave ±2^24 is added in bytes, and
+    /// where it wrapped, the limit it passed is the result.
     #[track_caller]
     pub fn saturating_add(self, other: impl super::Conv<Val<T>>) -> Val<T> {
         let other = other.conv();
-        Val::not_wide_for("saturating_add", self, other);
-        self.saturate(self + other)
+        match self.saturating_in_bytes(other, |left, right| (left.min + right.min, left.max + right.max)) {
+            Some((a, b)) => self.unwrap_limit(other, wide::add(&a, &b), true),
+            None => self.saturate(self + other),
+        }
     }
 
+    /// Integers only: `self - other` held at the type's limits, in bytes where it may leave ±2^24.
     #[track_caller]
     pub fn saturating_sub(self, other: impl super::Conv<Val<T>>) -> Val<T> {
         let other = other.conv();
-        Val::not_wide_for("saturating_sub", self, other);
-        self.saturate(self - other)
+        match self.saturating_in_bytes(other, |left, right| (left.min - right.max, left.max - right.min)) {
+            Some((a, b)) => self.unwrap_limit(other, wide::sub(&a, &b), false),
+            None => self.saturate(self - other),
+        }
     }
 
-    /// Wide sums wrap, so clamping them afterwards would be wrong: refuse instead of building that.
-    #[track_caller]
-    fn not_wide_for(name: &str, left: Val<T>, right: Val<T>) {
-        if left.is_wide() || right.is_wide() {
-            panic!(
-                "{}: {name} on a value beyond ±2^24 isn't supported yet; use wrapping_* or compare first",
-                Location::caller()
-            );
+    /// The operands as bytes when a saturating operation needs them: when either is held as bytes, or when the
+    /// exact result, bounded by `bounds` over the operands' ranges, may leave ±2^24. Otherwise one wire holds the
+    /// result exactly and a clamp saturates it.
+    fn saturating_in_bytes(
+        self,
+        other: Val<T>,
+        bounds: impl Fn(crate::numeric::Range, crate::numeric::Range) -> (f64, f64),
+    ) -> Option<(Limbs, Limbs)> {
+        assert!(T::KIND == Kind::Int, "saturating arithmetic is for integers");
+        if let Some(pair) = wide_pair(self, other) {
+            return Some(pair);
         }
+        let (left, right) = with_circuit(|circuit| (circuit.range(self.wire()), circuit.range(other.wire())));
+        let (low, high) = bounds(left, right);
+        if low > -16_777_216.0 && high < 16_777_216.0 {
+            return None;
+        }
+        Some((wide::limbs_as::<T, T>(self), wide::limbs_as::<T, T>(other)))
+    }
+
+    /// `wrapped`, the wrapping sum (`add`) or difference of `self` and `other`, or the limit it passed where it
+    /// wrapped. Adding a nonnegative value wrapped where the result is below `self`, and a negative one where it is
+    /// above; subtracting is the other way around.
+    fn unwrap_limit(self, other: Val<T>, wrapped: Val<T>, add: bool) -> Val<T> {
+        let below = lt(wrapped, self);
+        let above = gt(wrapped, self);
+        let max = Val::constant(T::from_f64(T::MAX));
+        let min = Val::constant(T::from_f64(T::MIN));
+        if T::MIN >= 0.0 {
+            // Unsigned: a sum can only pass the top, a difference only the bottom.
+            return if add { Val::select_by(below, wrapped, max) } else { Val::select_by(above, wrapped, min) };
+        }
+        let nonnegative = ge(other, Val::constant(T::from_f64(0.0)));
+        let (to_max, to_min) = if add {
+            (and(nonnegative, || below), and(!nonnegative, || above))
+        } else {
+            (and(!nonnegative, || below), and(nonnegative, || above))
+        };
+        Val::select_by(to_min, Val::select_by(to_max, wrapped, max), min)
     }
 
     #[track_caller]

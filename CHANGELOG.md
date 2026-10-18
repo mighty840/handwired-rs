@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `saturating_add` and `saturating_sub` on values held as bytes, and on one-wire values whose result may leave
+  ±2^24: the wrapping result in bytes, or the limit it passed where it wrapped, found by comparing it with the left
+  operand. They used to fail the build. Narrow circuits are unchanged.
 - Bit splits declare their ReLU ramps' ranges and integer grids: each step knows what's left is below twice its
   threshold, which the sum of its terms' ranges doesn't show. Circuits are unchanged, but every value in bit-heavy
   programs now has a known integer range, so GPU stages pack all of them: the wide hash carries 22 words per record

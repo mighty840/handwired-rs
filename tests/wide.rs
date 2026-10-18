@@ -272,7 +272,7 @@ fn negative_values_sign_extend_into_bytes() {
     }
 }
 
-/// Saturating arithmetic on a wide value would wrap first, so it fails the build.
+/// Saturating arithmetic on a wide value: the sum or difference in bytes, held at the limit it passed.
 #[handwired]
 fn saturating_wide(a: u8) -> u8 {
     let big = (a as u32) << 24;
@@ -280,9 +280,91 @@ fn saturating_wide(a: u8) -> u8 {
 }
 
 #[test]
-#[should_panic(expected = "saturating_add on a value beyond ±2^24")]
-fn saturating_on_wide_values_is_rejected() {
-    saturating_wide_circuit();
+fn saturating_on_a_shifted_value() {
+    let compiled = saturating_wide_circuit();
+    assert_eq!(compiled.verify(1_000).unwrap().skipped, 0);
+    assert_eq!(compiled.eval(&(255,)).unwrap(), 255);
+    assert_eq!(compiled.eval(&(254,)).unwrap(), 255);
+    assert_eq!(compiled.eval(&(3,)).unwrap(), 4);
+}
+
+/// `saturating_add` and `saturating_sub` on u32 and i32 values held as bytes, both signs of the other operand.
+#[handwired]
+fn saturating_words(a: [u8; 4], b: [u8; 4]) -> ([u8; 4], [u8; 4], [u8; 4], [u8; 4]) {
+    let x = (a[0] as u32) | (a[1] as u32) << 8 | (a[2] as u32) << 16 | (a[3] as u32) << 24;
+    let y = (b[0] as u32) | (b[1] as u32) << 8 | (b[2] as u32) << 16 | (b[3] as u32) << 24;
+    let (sx, sy) = (x as i32, y as i32);
+    (
+        le_bytes(x.saturating_add(y)),
+        le_bytes(x.saturating_sub(y)),
+        le_bytes(sx.saturating_add(sy) as u32),
+        le_bytes(sx.saturating_sub(sy) as u32),
+    )
+}
+
+/// A u32's bytes, least significant first.
+#[handwired]
+fn le_bytes(v: u32) -> [u8; 4] {
+    [v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]
+}
+
+#[test]
+fn saturating_arithmetic_on_32_bit_bytes() {
+    let compiled = saturating_words_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let edges = [0u32, 1, 2, 0x7FFF_FFFE, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF, 12_345_678];
+    let mut records = Vec::new();
+    for &x in &edges {
+        for &y in &edges {
+            records.push((x.to_le_bytes(), y.to_le_bytes()));
+        }
+    }
+    let results = compiled.run_batch(&records).unwrap();
+    for (&(a, b), result) in records.iter().zip(&results) {
+        assert_eq!(*result, saturating_words(a, b), "{} {}", u32::from_le_bytes(a), u32::from_le_bytes(b));
+    }
+}
+
+/// 64-bit saturating arithmetic, and u32 values on one wire whose sum may pass 2^24.
+#[handwired]
+fn saturating_wider(
+    a: [u8; 8],
+    b: [u8; 8],
+    #[range(0, 16_000_000)] p: u32,
+    #[range(0, 16_000_000)] q: u32,
+) -> ([u8; 8], [u8; 8], [u8; 4], u32) {
+    let mut x = 0u64;
+    let mut y = 0u64;
+    for i in 0..8 {
+        x |= (a[i] as u64) << (8 * i);
+        y |= (b[i] as u64) << (8 * i);
+    }
+    let unsigned = x.saturating_add(y);
+    let signed = (x as i64).saturating_sub(y as i64) as u64;
+    let mut out = ([0u8; 8], [0u8; 8]);
+    for i in 0..8 {
+        out.0[i] = (unsigned >> (8 * i)) as u8;
+        out.1[i] = (signed >> (8 * i)) as u8;
+    }
+    let sum = p.saturating_add(q);
+    (out.0, out.1, [sum as u8, (sum >> 8) as u8, (sum >> 16) as u8, (sum >> 24) as u8], p.saturating_sub(q))
+}
+
+#[test]
+fn saturating_arithmetic_on_64_bit_bytes_and_wide_sums() {
+    let compiled = saturating_wider_circuit();
+    assert_eq!(compiled.verify(5_000).unwrap().skipped, 0);
+    let edges = [0u64, 1, i64::MAX as u64, 1 << 63, u64::MAX, u64::MAX - 1, 0x0123_4567_89AB_CDEF];
+    let mut records = Vec::new();
+    for &x in &edges {
+        for &y in &edges {
+            records.push((x.to_le_bytes(), y.to_le_bytes(), 16_000_000, (x % 16_000_001) as u32));
+        }
+    }
+    let results = compiled.run_batch(&records).unwrap();
+    for (&(a, b, p, q), result) in records.iter().zip(&results) {
+        assert_eq!(*result, saturating_wider(a, b, p, q), "{a:?} {b:?} {p} {q}");
+    }
 }
 
 /// Division and remainder by constants and `abs` on wide values: byte digits for divisors up to 65,536, narrower digits
