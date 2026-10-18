@@ -157,3 +157,39 @@ fn results_are_struct_fields() {
     let log = Log { last: Ok(3), tries: 2 };
     assert_eq!(compiled.eval(&(log, 4, true)).unwrap(), Log { last: Err(Fault::Off(1)), tries: 3 });
 }
+
+/// `?` inside a `for` body and a `while let` with a limit: the first refused step ends the function.
+#[handwired]
+pub fn route(
+    #[range(0, 9)] start: u8,
+    #[range(-3, 3)] moves: [i8; 4],
+    #[range(-3, 3)] plan: Option<i8>,
+) -> Result<u8, Fault> {
+    let mut at = start;
+    for by in moves {
+        at = step(at, by)?;
+    }
+    let mut extra = plan;
+    #[max_iterations(4)]
+    while let Some(by) = extra {
+        at = step(at, by)?;
+        extra = if by > 0 { Some(by - 1) } else { None };
+    }
+    Ok(at)
+}
+
+#[test]
+fn question_marks_leave_loops() {
+    let compiled = route_circuit();
+    assert_eq!(compiled.verify(10_000).unwrap().skipped, 0);
+    for (start, moves, plan) in [
+        (0, [3, 3, 3, -3], None),
+        (0, [3, 3, 3, 3], None),
+        (5, [-3, -3, 3, 3], Some(2)),
+        (5, [0, 0, 0, 0], Some(1)),
+        (8, [0, 0, 0, 0], Some(2)),
+        (9, [-3, 0, 0, 0], Some(-1)),
+    ] {
+        assert_eq!(compiled.eval(&(start, moves, plan)).unwrap(), route(start, moves, plan), "{start} {moves:?}");
+    }
+}
