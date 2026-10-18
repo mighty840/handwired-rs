@@ -4,9 +4,10 @@
 //! them into scratch memory the caller provides. Results are bit-exact with handwired-rs's CPU executor wherever f32
 //! arithmetic is IEEE 754, including software floating point on chips without an FPU.
 //!
-//! Every run does the same operations in the same order whatever the inputs, so its time depends only on the
-//! program (given arithmetic whose time doesn't depend on the values). Inputs outside the ranges the function
-//! declared are refused, since the circuit is only exact within them.
+//! Every run does the same operations in the same order whatever the inputs, so its time is bounded by the program:
+//! it doesn't vary at all where each f32 operation takes fixed time, as on hardware FPUs, and only by how long each
+//! operation takes where that depends on the values, as in software floating point. Inputs outside the ranges the
+//! function declared are refused, since the circuit is only exact within them.
 //!
 //! ```
 //! # fn demo(bytes: &[u8]) -> Result<(), handwired_rs_run::Error> {

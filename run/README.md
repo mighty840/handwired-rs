@@ -7,8 +7,9 @@ for Cortex-M0, Cortex-M4F/M7 and RV32IMC) as well as for Linux and other hosts.
 You write business logic as an ordinary Rust function with `#[handwired]`, check it against itself with `verify()`,
 and export it as bytes. A device runs those bytes with this crate:
 
-- **The same work every time.** Every run does the same operations in the same order, whatever the inputs, so how
-  long it takes depends only on the program (on arithmetic whose speed doesn't depend on the values; see below).
+- **The same work every time.** Every run does the same operations in the same order, whatever the inputs. On a
+  hardware FPU its time is fixed by the program; with software floating point it varies by how long each operation
+  takes (up to about 17% on a Cortex-M4, see below).
 - **The same results everywhere.** Results are bit-exact with handwired-rs's CPU executor, which handwired-rs checks
   against the original function. That holds wherever f32 arithmetic is IEEE 754, including software floating point.
 - **Logic as data.** A program is a file. Its SHA-256 identifies it, so a device can report which logic made a
@@ -78,17 +79,32 @@ $ printf '200 21 0\n215 20 1\n' | handwired-run heater.hwc
   true of hardware FPUs in their default mode and of Rust's software floating point. Programs that keep fractional
   values can reach subnormal numbers. A flush-to-zero mode, which some startup code enables, then changes results;
   integer logic never makes subnormals.
-- Run time is fixed by the program on hardware FPUs. Software floating point and some FPUs take longer on subnormal
-  numbers, so time can vary there by a few cycles per operation.
-- On microcontrollers this is checked by building only: the tests that compare results bit for bit run on the host.
-  Software floating point is IEEE-exact, so the host results carry over, but nothing has run on real hardware yet.
+- Checked on hardware:
+  - An STM32WL55 (Cortex-M4 without an FPU, so software floating point) ran 8 programs on 62 records each.
+  - Every output bit matched the host.
+  - The programs cover integer logic, bitwise operations, division, enums, fractional floats, subnormal numbers,
+    gathers and a 64-bit hash.
+  - QEMU's Cortex-M0 and Cortex-M3 give the same results, and CI runs them; see `hardware/` to repeat the check.
+- Run time with software floating point varies with the values, even though the operations don't: each soft-float
+  add or multiply takes longer or shorter depending on its operands. On the WL55 the spread between the fastest and
+  slowest record was 0.4% for the heater logic and up to 17% for bit-heavy programs. A worst case still exists
+  (the operation count times the slowest soft-float operation), but measure it per program. On a hardware FPU each
+  add and multiply takes fixed time, except that some FPUs slow down on subnormal numbers.
 
 ## Cost
 
-A run is about 1.3x the time of handwired-rs's in-memory executor on the same machine, since it reads the program
-from its bytes as it goes. On a desktop core, a 1,129-operation 64-bit hash takes about 21 µs. Its program is 84 KB,
-and the scratch it needs is 1,190 f32 cells. A circuit evaluates every path, so the same logic in plain Rust is
-much faster: what this buys is a fixed operation count, exactness and the program as data, not speed.
+A run takes about 1.3x as long as handwired-rs's in-memory executor on the same machine, because it reads the
+program from its bytes as it goes. Measured times:
+
+| Program | Size | Scratch (f32 cells) | Desktop core | STM32WL55, 32 MHz, software floats |
+|---|---|---|---|---|
+| Heater logic (26 layers) | 11.8 KB | 556 | | 54k cycles, 1.7 ms |
+| Unit plan with enums and Options | 3.8 KB | 140 | | 65k cycles, 2.0 ms |
+| Division (tables and long division) | 20.9 KB | 573 | | 203k cycles, 6.3 ms |
+| 1,129-operation 64-bit hash | 84 KB | 1,190 | about 21 µs | 1.87M cycles, 58 ms |
+
+A circuit evaluates every path, so the same logic in plain Rust is much faster. What this buys is a fixed list of
+operations, exactness and the program as data, not speed.
 
 ## Format
 

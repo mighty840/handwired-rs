@@ -414,13 +414,14 @@ Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests sk
 allocation, and builds for microcontrollers with and without an FPU. Business logic written as a `#[handwired]`
 function and checked with `verify()` then ships to a device as a file:
 
-- every run takes the same operations whatever the inputs;
+- every run does the same operations whatever the inputs;
 - results are bit-exact with the CPU executor wherever f32 arithmetic is IEEE 754;
 - the file's hash says which logic ran.
 
 Inputs outside the declared ranges and damaged files are refused. With its `std` feature it adds `handwired-run`, a
-command that runs a program over records on standard input. A run costs about 1.3x the CPU executor. On
-microcontrollers it is so far only built, not run.
+command that runs a program over records on standard input. A run costs about 1.3x the CPU executor. On an
+STM32WL55 (Cortex-M4 without an FPU), every output of 8 test programs matched the host bit for bit; heater-style
+logic took 1.7 ms at 32 MHz.
 
 ## Two larger examples
 
