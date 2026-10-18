@@ -602,3 +602,36 @@ fn wide_integer_batches_match_the_function() {
         assert_eq!(result, wide_hash(record.0, record.1), "{record:?}");
     }
 }
+
+/// Bit splits of every kind: a signed split, byte carries, long division by a constant and by a value. Their ReLU ramps
+/// are integers within declared bounds, which stages pack into a few bits each when they pass them on.
+#[handwired]
+fn splits(a: i16, bytes: [u8; 4], #[range(1, 300)] d: u32, #[range(0, 7)] s: u8) -> (i16, [u8; 4], u32, u32, u32) {
+    let b = (bytes[0] as u32) | (bytes[1] as u32) << 8 | (bytes[2] as u32) << 16 | (bytes[3] as u32) << 24;
+    let hashed = b.wrapping_mul(0x0100_0193) ^ (a as u32);
+    let quotient = hashed / 1_000_003;
+    let out = [hashed as u8, (hashed >> 8) as u8, (hashed >> 16) as u8, (hashed >> 24) as u8];
+    ((a ^ 0x5A5A) >> s, out, quotient, hashed % d, (b & 0xFFFF) / d)
+}
+
+#[test]
+fn packed_ramps_cross_stages_exactly() {
+    let Some(gpu) = gpu() else { return };
+    // Small stages, so many ramps cross a cut.
+    let batch = GpuBatch::staged(&gpu, &splits_circuit(), 120).unwrap();
+    assert!(batch.program.stages.len() > 10, "{} stages", batch.program.stages.len());
+    let mut rng = Rng(5);
+    let mut records: Vec<(i16, [u8; 4], u32, u8)> = (0..4096)
+        .map(|_| (rng.next() as i16, (rng.next() as u32).to_le_bytes(), 1 + rng.below(300) as u32, rng.below(8) as u8))
+        .collect();
+    for a in [i16::MIN, -1, 0, i16::MAX] {
+        for b in [0u32, 1, 0xFFFF, u32::MAX] {
+            for d in [1, 2, 299, 300] {
+                records.push((a, b.to_le_bytes(), d, 7));
+            }
+        }
+    }
+    for (record, result) in records.iter().zip(batch.run(&gpu, &records).unwrap()) {
+        assert_eq!(result, splits(record.0, record.1, record.2, record.3), "{record:?}");
+    }
+}

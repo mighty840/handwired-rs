@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Bit splits declare their ReLU ramps' ranges and integer grids: each step knows what's left is below twice its
+  threshold, which the sum of its terms' ranges doesn't show. Circuits are unchanged, but every value in bit-heavy
+  programs now has a known integer range, so GPU stages pack all of them: the wide hash carries 22 words per record
+  between stages instead of 87 (its run time is unchanged), and `TensorProgram::ranges`/`grids` are tighter.
+
 ## 0.8.0 (2026-10-18): handwired-rs and handwired-rs-gpu 0.8.0, handwired-rs-macros 0.5.0
 
 - `<`, `<=`, `>`, `>=`, `min`, `max` and `clamp` on `Option`, `Result` and enums with data, in the order Rust derives:

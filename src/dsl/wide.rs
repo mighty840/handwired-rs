@@ -172,7 +172,7 @@ fn constant_byte(value: f64) -> Wire {
 /// 255 where a byte's top bit is set, else 0: the fill of a negative value.
 fn sign_byte(top: Wire) -> Wire {
     with_circuit(|circuit| {
-        let sign = integer_step(circuit, &Lin::new(vec![(top, 1.0)], 0.0), 128.0, true);
+        let sign = integer_step(circuit, &Lin::new(vec![(top, 1.0)], 0.0), 128.0, true, None);
         byte(circuit, Lin::new(vec![(sign.wire(), 255.0)], 0.0))
     })
 }
@@ -220,7 +220,9 @@ fn carry_out(circuit: &mut Circuit, form: Lin, largest: f64, bytes: bool) -> (Op
     let steps = 64 - high.leading_zeros();
     for step in (0..steps).rev() {
         let threshold = BASE * (1u64 << step) as f64;
-        let bit = integer_step(circuit, &rest, threshold, copied);
+        // The carry bits above are taken off, so what's left is below twice the threshold.
+        let known = (0.0, largest.min(2.0 * threshold - 1.0));
+        let bit = integer_step(circuit, &rest, threshold, copied, Some(known));
         rest.terms.push((bit.wire(), -threshold));
         carry.terms.push((bit.wire(), (1u64 << step) as f64));
     }
@@ -321,7 +323,7 @@ pub(super) fn at_least<T: Scalar>(a: &Limbs, b: &Limbs) -> Val<bool> {
         }
         // top ^ 128 = top + 128 - 256 × [top >= 128].
         with_circuit(|circuit| {
-            let high = integer_step(circuit, &Lin::new(vec![(wire, 1.0)], 0.0), 128.0, true);
+            let high = integer_step(circuit, &Lin::new(vec![(wire, 1.0)], 0.0), 128.0, true, None);
             Lin::new(vec![(wire, 1.0), (high.wire(), -BASE)], 128.0)
         })
     };
@@ -549,7 +551,9 @@ pub(super) fn divide_bytes(a: &Limbs, divisor: u64) -> (Limbs, Wire) {
             let mut rest = form;
             for step in (0..64 - high.leading_zeros()).rev() {
                 let threshold = d * (1u64 << step) as f64;
-                let bit = integer_step(circuit, &rest, threshold, copied);
+                // The quotient bits above are taken off, so what's left is below twice the threshold.
+                let known = (0.0, largest.min(2.0 * threshold - 1.0));
+                let bit = integer_step(circuit, &rest, threshold, copied, Some(known));
                 rest.terms.push((bit.wire(), -threshold));
                 quotient[low + step as usize] = bit;
             }
@@ -592,7 +596,7 @@ pub(super) fn divide_by_wire(bits: &[Val<bool>], divisor: Wire) -> (Vec<Val<bool
             if largest < d_min {
                 return;
             }
-            let fits = integer_step(circuit, &(rest.clone() - divisor), 0.0, false);
+            let fits = integer_step(circuit, &(rest.clone() - divisor), 0.0, false, None);
             let taken = circuit.multiply(fits.wire(), divisor);
             let remainder = circuit.round_affine(rest.clone() - taken);
             largest = largest.min((d_max - 1.0).max(0.0));
@@ -634,7 +638,7 @@ pub(super) fn narrow<T: Scalar>(a: &Limbs) -> Val<T> {
         }
         if signed::<T>() {
             let top = a.wires[bytes - 1];
-            let high = integer_step(circuit, &Lin::new(vec![(top, 1.0)], 0.0), 128.0, true);
+            let high = integer_step(circuit, &Lin::new(vec![(top, 1.0)], 0.0), 128.0, true, None);
             form.terms.push((high.wire(), -BASE.powi(bytes as i32)));
         }
         let wire = circuit.round_affine(form);

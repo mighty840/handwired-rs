@@ -73,10 +73,30 @@ const COPIED_BITS: usize = 11;
 /// ordinary sum that readers fold into theirs, so each bit is one layer;
 /// otherwise it is kept as its own sum, which readers read as a 0 or 1, since
 /// copying ramps of up to 2^24 times 2^k would round.
-pub(super) fn integer_step(circuit: &mut Circuit, form: &Lin, threshold: f64, copied: bool) -> Val<bool> {
+///
+/// `known` bounds the form's value where the caller knows more than the sum of
+/// its terms' ranges, e.g. what's left after a split's higher bits, below
+/// twice the threshold. The ramps are integers within the bounds that follow,
+/// declared so, which readers' ranges and grids build on and the GPU packs.
+pub(super) fn integer_step(
+    circuit: &mut Circuit,
+    form: &Lin,
+    threshold: f64,
+    copied: bool,
+    known: Option<(f64, f64)>,
+) -> Val<bool> {
     let shifted = |offset: f64| Lin::new(form.terms.clone(), form.bias + offset);
     let upper = circuit.relu(shifted(1.0 - threshold));
     let lower = circuit.relu(shifted(-threshold));
+    for (ramp, offset) in [(upper, 1.0 - threshold), (lower, -threshold)] {
+        if circuit.constant_value(ramp).is_some() {
+            continue;
+        }
+        if let Some((low, high)) = known {
+            circuit.assume_range_allowing_readers(ramp, (low + offset).max(0.0), (high + offset).max(0.0));
+        }
+        circuit.assume_grid_allowing_readers(ramp, 1.0);
+    }
     let difference = Lin::new(vec![(upper, 1.0), (lower, -1.0)], 0.0);
     let bit = if copied { circuit.affine(difference) } else { circuit.round_affine(difference) };
     settle::<bool>(circuit, bit, 0.0, 1.0)
@@ -105,7 +125,7 @@ pub(super) fn split<T: Scalar>(value: Val<T>) -> Bits {
         // A negative value is brought into 0..2^len: rest = value + 2^len where value < 0.
         let sign = if low < 0.0 {
             let negated = Lin::new(vec![(value.wire(), -1.0)], 0.0);
-            let sign = integer_step(circuit, &negated, 1.0, copied);
+            let sign = integer_step(circuit, &negated, 1.0, copied, None);
             rest.terms.push((sign.wire(), (1u64 << len) as f64));
             sign
         } else {
@@ -119,7 +139,8 @@ pub(super) fn split<T: Scalar>(value: Val<T>) -> Bits {
                 circuit.assume_range_allowing_readers(wire, 0.0, 1.0);
                 settle::<bool>(circuit, wire, 0.0, 1.0)
             } else {
-                integer_step(circuit, &rest, (1u64 << k) as f64, copied)
+                // The bits above are taken off, so what's left is below 2^(k + 1).
+                integer_step(circuit, &rest, (1u64 << k) as f64, copied, Some((0.0, ((2u64 << k) - 1) as f64)))
             };
             low_bits[k] = bit;
             rest.terms.push((bit.wire(), -((1u64 << k) as f64)));
