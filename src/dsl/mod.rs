@@ -42,7 +42,10 @@ pub use control::{
 };
 /// `#[derive(HwType)]` on a struct with named fields; see the macros crate.
 pub use handwired_rs_macros::HwType;
-pub use ops::{Cmp, Logic, RunningSum, and, cells_equal, compare_native, eq, ge, gt, le, lt, ne, or, running_sums};
+pub use ops::{
+    Cmp, Logic, RunningSum, and, cells_compare, cells_equal, compare_encoded, compare_native, eq, ge, gt, le, lt, ne,
+    or, running_sums,
+};
 pub use option::{OptionHw, some};
 pub use result::{ResultHw, err, ok};
 

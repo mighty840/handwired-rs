@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `<`, `<=`, `>`, `>=`, `min`, `max` and `clamp` on `Option`, `Result` and enums with data, in the order Rust derives:
+  the variant in declaration order, then its fields in order. Comparing two native values of such an enum no longer
+  panics and needs no `PartialOrd`. `min`, `max` and `clamp` also work on `bool`s and fieldless enums. `dsl` gains
+  `cells_compare` and `compare_encoded`; the native `Option` and `Result` comparisons need `T: HwType`.
 - `Result<T, E>`, laid out and used like `Option`: `Ok(..)`/`Err(..)`, patterns, `==`/`!=`, `is_ok`, `is_err`, `ok`,
   `err`, `unwrap_or`, `unwrap`, `expect`, `unwrap_err` and `expect_err`. `?` on a `Result` or an `Option` in a function
   that returns one, leaving early like `return` (no `From` conversion of the error). `dsl` gains `ResultHw`, `ok` and

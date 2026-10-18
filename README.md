@@ -248,8 +248,9 @@ pub fn act(unit: Unit, action: Action) -> (Unit, Option<u8>) {
 
 Patterns bind fields by position or name, nest (`Some(Action::Attack(d)) if d > 3`), and take literals, ranges and
 `..` at the end; `match`, `if let`, `while let` and `matches!` all use them. Each variant test is one equality
-comparison of the index. `==` and `!=` compare the variant and, for variants with fields, the fields; ordering
-comparisons aren't supported. `Option` values have `is_some`, `is_none`, `unwrap_or`, `unwrap` and `expect` (the last
+comparison of the index. `==` and `!=` compare the variant and, for variants with fields, the fields; `<`, `<=`, `>`,
+`>=`, `min`, `max` and `clamp` order values as Rust derives it, by variant in declaration order and then field by field
+(`None` before `Some`, `Ok` before `Err`), one comparison pair per cell. `Option` values have `is_some`, `is_none`, `unwrap_or`, `unwrap` and `expect` (the last
 two give an unspecified value for `None`, where Rust panics). The derive adds `ActionHw`, the circuit form.
 Constructors name the variant by its enum, `Action::Attack(d)` or `Action::Move { dx, dy: 0 }`, since the macro can't
 tell which enum a bare `Attack(d)` after `use Action::*` belongs to (bare unit variants work, as in patterns). `Some(x)`

@@ -3,13 +3,14 @@
 
 use super::compiled::{Attrs, HwType, Inputs, Rng, declare_scalar};
 use super::control::{Conv, Elem, Lift, Mux, Native, Placeholder, Unify};
-use super::ops::{Cmp, and, cells_equal};
+use super::ops::{Cmp, and, cells_compare, cells_equal, compare_encoded};
 use super::{IntScalar, Val};
 use crate::emit::Relation;
 use crate::wire::Wire;
 
 /// The circuit form of `Option<T>`. `#[handwired]` code builds it from `Some(..)` and `None`, matches it with
-/// patterns, and calls `is_some`, `is_none`, `unwrap`, `expect` and `unwrap_or` on it.
+/// patterns, compares it with `==` and, in the order Rust derives (`None` first), `<`, and calls `is_some`, `is_none`,
+/// `unwrap`, `expect`, `unwrap_or`, `min`, `max` and `clamp` on it.
 #[allow(non_snake_case)]
 pub struct OptionHw<T: HwType> {
     #[doc(hidden)]
@@ -60,6 +61,21 @@ impl<T: HwType> OptionHw<T> {
     }
     pub fn unwrap_or(self, default: impl Conv<T::Val>) -> T::Val {
         Mux::select(self.__tag, default.conv(), self.__Some__0)
+    }
+
+    /// The smaller of the two, in the order Rust derives: `self` where they're equal, like `Ord::min`.
+    pub fn min(self, other: impl Conv<Self>) -> Self {
+        let other = other.conv();
+        Mux::select(super::le(self, other), other, self)
+    }
+    /// The larger of the two, in the order Rust derives: `other` where they're equal, like `Ord::max`.
+    pub fn max(self, other: impl Conv<Self>) -> Self {
+        let other = other.conv();
+        Mux::select(super::gt(self, other), other, self)
+    }
+    /// `self` within `low..=high`, like `Ord::clamp`.
+    pub fn clamp(self, low: impl Conv<Self>, high: impl Conv<Self>) -> Self {
+        self.max(low).min(high)
     }
 
     fn same_value(&self, other: &Self) -> Val<bool> {
@@ -220,14 +236,13 @@ impl<T: HwType + Copy + Conv<T::Val>, I: IntScalar> Elem<Val<I>> for Option<T> {
     }
 }
 
-fn unordered() -> ! {
-    panic!("ordering comparisons of Options aren't supported in #[handwired] functions; compare their values")
-}
-
 impl<T: HwType> Cmp<OptionHw<T>> for OptionHw<T> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: OptionHw<T>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: OptionHw<T>) -> Val<bool> {
+        let (mut left_cells, mut right_cells) = (Vec::new(), Vec::new());
+        <Option<T> as HwType>::outputs(&self, &mut left_cells);
+        <Option<T> as HwType>::outputs(&right, &mut right_cells);
+        cells_compare(&left_cells, relation, &right_cells)
     }
     fn equal(self, right: OptionHw<T>, equal: bool) -> Val<bool> {
         // Both `None`, or both `Some` with equal values.
@@ -238,8 +253,8 @@ impl<T: HwType> Cmp<OptionHw<T>> for OptionHw<T> {
 }
 impl<T: HwType + Conv<T::Val>> Cmp<Option<T>> for OptionHw<T> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: Option<T>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: Option<T>) -> Val<bool> {
+        self.compare(relation, right.conv())
     }
     fn equal(self, right: Option<T>, equal: bool) -> Val<bool> {
         // The right side's variant is known while the circuit is built.
@@ -255,17 +270,18 @@ impl<T: HwType + Conv<T::Val>> Cmp<Option<T>> for OptionHw<T> {
 }
 impl<T: HwType + Conv<T::Val>> Cmp<OptionHw<T>> for Option<T> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: OptionHw<T>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: OptionHw<T>) -> Val<bool> {
+        let left: OptionHw<T> = self.conv();
+        left.compare(relation, right)
     }
     fn equal(self, right: OptionHw<T>, equal: bool) -> Val<bool> {
         right.equal(self, equal)
     }
 }
-impl<T: PartialEq> Cmp<Option<T>> for Option<T> {
+impl<T: HwType + PartialEq> Cmp<Option<T>> for Option<T> {
     type Output = bool;
-    fn compare(self, _: Relation, _: Option<T>) -> bool {
-        unordered()
+    fn compare(self, relation: Relation, right: Option<T>) -> bool {
+        compare_encoded(&self, relation, &right)
     }
     fn equal(self, right: Option<T>, equal: bool) -> bool {
         (self == right) == equal

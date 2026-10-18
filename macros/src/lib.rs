@@ -42,7 +42,8 @@ mod loops;
 ///
 /// On an enum whose variants carry data it adds `<Name>Hw`: the variant's index in one cell, then every variant's
 /// fields, which hold 0 where the value is another variant. `#[handwired]` code builds it with `Name::Variant(..)` and
-/// `Name::Variant { .. }`, and matches it with patterns that bind the fields.
+/// `Name::Variant { .. }`, matches it with patterns that bind the fields, compares it with `==`, and orders it with `<`,
+/// `min`, `max` and `clamp` as Rust derives it (for which the enum itself needs `PartialOrd` or `Ord`).
 #[proc_macro_derive(HwType, attributes(range, ranges, grid))]
 pub fn derive_hw_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);

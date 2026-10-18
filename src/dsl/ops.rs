@@ -472,28 +472,30 @@ native_left_arithmetic!(u8, u16, u32, u64, usize, i8, i16, i32, i64, f32);
 
 // ---- Methods ----------------------------------------------------------------------------------------------------------
 
-impl<T: Num> Val<T> {
-    fn select_by(bit: Val<bool>, off: Val<T>, on: Val<T>) -> Val<T> {
-        <Val<T> as super::Mux>::select(bit, off, on)
-    }
-
+impl<T: Scalar> Val<T> {
     #[track_caller]
     pub fn min(self, other: impl super::Conv<Val<T>>) -> Val<T> {
         let other = other.conv();
         // Ties return self, like Ord::min.
-        Val::select_by(le(self, other), other, self)
+        <Val<T> as super::Mux>::select(le(self, other), other, self)
     }
 
     #[track_caller]
     pub fn max(self, other: impl super::Conv<Val<T>>) -> Val<T> {
         let other = other.conv();
         // Ties return other, like Ord::max.
-        Val::select_by(gt(self, other), other, self)
+        <Val<T> as super::Mux>::select(gt(self, other), other, self)
     }
 
     #[track_caller]
     pub fn clamp(self, low: impl super::Conv<Val<T>>, high: impl super::Conv<Val<T>>) -> Val<T> {
         self.max(low.conv()).min(high.conv())
+    }
+}
+
+impl<T: Num> Val<T> {
+    fn select_by(bit: Val<bool>, off: Val<T>, on: Val<T>) -> Val<T> {
+        <Val<T> as super::Mux>::select(bit, off, on)
     }
 
     #[track_caller]
@@ -674,6 +676,53 @@ fn not_bit(bit: Val<bool>) -> Val<bool> {
 pub(super) fn equality(left: Wire, right: Wire, equal: bool) -> Val<bool> {
     let bit = compare_wires(left, Relation::Equal, right);
     if equal { bit } else { not_bit(bit) }
+}
+
+/// How two values' cells compare, the way Rust's derived `PartialOrd` compares: the first cells that differ decide.
+/// For an `Option`, a `Result` or an enum with data, whose first cell is the variant in declaration order and whose
+/// other variants' cells hold 0 on both sides, that is the derived ordering.
+pub fn cells_compare(left: &[Wire], relation: Relation, right: &[Wire]) -> Val<bool> {
+    match relation {
+        Relation::Less => cells_before(left, right, false),
+        Relation::AtMost => cells_before(left, right, true),
+        Relation::Greater => cells_before(right, left, false),
+        Relation::AtLeast => cells_before(right, left, true),
+        Relation::Equal => cells_equal(left, right),
+    }
+}
+
+/// Whether `left` comes before `right`, or equals it too when `or_equal` is set: the last cell decides where all the
+/// ones before are equal.
+fn cells_before(left: &[Wire], right: &[Wire], or_equal: bool) -> Val<bool> {
+    assert_eq!(left.len(), right.len(), "values of different shapes");
+    let Some(last) = left.len().checked_sub(1) else {
+        return Val::constant(or_equal);
+    };
+    let last_relation = if or_equal { Relation::AtMost } else { Relation::Less };
+    let mut bit = compare_wires(left[last], last_relation, right[last]);
+    for index in (0..last).rev() {
+        let less = compare_wires(left[index], Relation::Less, right[index]);
+        let same = equality(left[index], right[index], true);
+        let rest = bit;
+        bit = or(less, || and(same, || rest));
+    }
+    bit
+}
+
+/// How two native values compare, by their encoded cells, as their circuits compare in [`cells_compare`].
+pub fn compare_encoded<T: super::HwType>(left: &T, relation: Relation, right: &T) -> bool {
+    use std::cmp::Ordering;
+    let (mut left_cells, mut right_cells) = (Vec::new(), Vec::new());
+    left.encode(&mut left_cells);
+    right.encode(&mut right_cells);
+    let order = left_cells.partial_cmp(&right_cells);
+    match relation {
+        Relation::Greater => order == Some(Ordering::Greater),
+        Relation::AtLeast => matches!(order, Some(Ordering::Greater | Ordering::Equal)),
+        Relation::Less => order == Some(Ordering::Less),
+        Relation::AtMost => matches!(order, Some(Ordering::Less | Ordering::Equal)),
+        Relation::Equal => order == Some(Ordering::Equal),
+    }
 }
 
 /// Whether two values' cells are all equal, e.g. two enum variants' fields from [`HwType::outputs`](super::HwType).

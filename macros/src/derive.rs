@@ -571,6 +571,21 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
         #[allow(non_snake_case, clippy::all)]
         impl #hw_name {
             #(#constructors)*
+
+            /// The smaller of the two, in the order Rust derives: `self` where they're equal, like `Ord::min`.
+            pub fn min(self, other: impl #dsl::Conv<#hw_name>) -> #hw_name {
+                let other: #hw_name = #dsl::Conv::conv(other);
+                #dsl::Mux::select(#dsl::le(self, other), other, self)
+            }
+            /// The larger of the two, in the order Rust derives: `other` where they're equal, like `Ord::max`.
+            pub fn max(self, other: impl #dsl::Conv<#hw_name>) -> #hw_name {
+                let other: #hw_name = #dsl::Conv::conv(other);
+                #dsl::Mux::select(#dsl::gt(self, other), other, self)
+            }
+            /// `self` within `low..=high`, like `Ord::clamp`.
+            pub fn clamp(self, low: impl #dsl::Conv<#hw_name>, high: impl #dsl::Conv<#hw_name>) -> #hw_name {
+                self.max(low).min(high)
+            }
         }
 
         #[allow(unused_assignments, unused_variables, unused_mut, unreachable_patterns, clippy::all)]
@@ -734,13 +749,14 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                 }
             }
 
-            fn unordered() -> ! {
-                panic!("ordering comparisons of {} aren't supported in #[handwired] functions, since its variants carry data", #label)
-            }
             impl #dsl::Cmp<#hw_name> for #hw_name {
                 type Output = #dsl::Val<bool>;
-                fn compare(self, _: ::handwired_rs::Relation, _: #hw_name) -> #dsl::Val<bool> {
-                    unordered()
+                fn compare(self, relation: ::handwired_rs::Relation, right: #hw_name) -> #dsl::Val<bool> {
+                    // The variant in declaration order, then its fields; other variants' cells are 0 on both sides.
+                    let (mut left_cells, mut right_cells) = (::std::vec::Vec::new(), ::std::vec::Vec::new());
+                    <#name as #dsl::HwType>::outputs(&self, &mut left_cells);
+                    <#name as #dsl::HwType>::outputs(&right, &mut right_cells);
+                    #dsl::cells_compare(&left_cells, relation, &right_cells)
                 }
                 fn equal(self, right: #hw_name, equal: bool) -> #dsl::Val<bool> {
                     // The same variant, and where it's a variant with fields, the same fields.
@@ -751,8 +767,8 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
             }
             impl #dsl::Cmp<#name> for #hw_name {
                 type Output = #dsl::Val<bool>;
-                fn compare(self, _: ::handwired_rs::Relation, _: #name) -> #dsl::Val<bool> {
-                    unordered()
+                fn compare(self, relation: ::handwired_rs::Relation, right: #name) -> #dsl::Val<bool> {
+                    #dsl::Cmp::compare(self, relation, <#name as #dsl::Conv<#hw_name>>::conv(right))
                 }
                 fn equal(self, right: #name, equal: bool) -> #dsl::Val<bool> {
                     // The right side's variant is known while the circuit is built.
@@ -763,8 +779,8 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
             }
             impl #dsl::Cmp<#hw_name> for #name {
                 type Output = #dsl::Val<bool>;
-                fn compare(self, _: ::handwired_rs::Relation, _: #hw_name) -> #dsl::Val<bool> {
-                    unordered()
+                fn compare(self, relation: ::handwired_rs::Relation, right: #hw_name) -> #dsl::Val<bool> {
+                    #dsl::Cmp::compare(<#name as #dsl::Conv<#hw_name>>::conv(self), relation, right)
                 }
                 fn equal(self, right: #hw_name, equal: bool) -> #dsl::Val<bool> {
                     #dsl::Cmp::equal(right, self, equal)
@@ -772,8 +788,9 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
             }
             impl #dsl::Cmp<#name> for #name {
                 type Output = bool;
-                fn compare(self, _: ::handwired_rs::Relation, _: #name) -> bool {
-                    unordered()
+                fn compare(self, relation: ::handwired_rs::Relation, right: #name) -> bool {
+                    // By the encoded cells, as the circuit compares, so it needs no `PartialOrd`.
+                    #dsl::compare_encoded(&self, relation, &right)
                 }
                 fn equal(self, right: #name, equal: bool) -> bool {
                     (self == right) == equal

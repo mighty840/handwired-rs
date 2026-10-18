@@ -3,15 +3,16 @@
 
 use super::compiled::{Attrs, HwType, Inputs, Rng, declare_scalar};
 use super::control::{Conv, Elem, Lift, Mux, Native, Placeholder, Unify};
-use super::ops::{Cmp, and, cells_equal};
+use super::ops::{Cmp, and, cells_compare, cells_equal, compare_encoded};
 use super::option::OptionHw;
 use super::{IntScalar, Val};
 use crate::emit::Relation;
 use crate::wire::Wire;
 
 /// The circuit form of `Result<T, E>`. `#[handwired]` code builds it from `Ok(..)` and `Err(..)`, matches it with
-/// patterns, uses `?` on it in functions that return a `Result`, and calls `is_ok`, `is_err`, `ok`, `err`,
-/// `unwrap_or`, `unwrap`, `expect`, `unwrap_err` and `expect_err` on it.
+/// patterns, compares it with `==` and, in the order Rust derives (`Ok` first), `<`, uses `?` on it in functions that
+/// return a `Result`, and calls `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `unwrap`, `expect`, `unwrap_err`,
+/// `expect_err`, `min`, `max` and `clamp` on it.
 #[allow(non_snake_case)]
 pub struct ResultHw<T: HwType, E: HwType> {
     #[doc(hidden)]
@@ -80,6 +81,21 @@ impl<T: HwType, E: HwType> ResultHw<T, E> {
     }
     pub fn unwrap_or(self, default: impl Conv<T::Val>) -> T::Val {
         Mux::select(self.__tag, self.__Ok__0, default.conv())
+    }
+
+    /// The smaller of the two, in the order Rust derives: `self` where they're equal, like `Ord::min`.
+    pub fn min(self, other: impl Conv<Self>) -> Self {
+        let other = other.conv();
+        Mux::select(super::le(self, other), other, self)
+    }
+    /// The larger of the two, in the order Rust derives: `other` where they're equal, like `Ord::max`.
+    pub fn max(self, other: impl Conv<Self>) -> Self {
+        let other = other.conv();
+        Mux::select(super::gt(self, other), other, self)
+    }
+    /// `self` within `low..=high`, like `Ord::clamp`.
+    pub fn clamp(self, low: impl Conv<Self>, high: impl Conv<Self>) -> Self {
+        self.max(low).min(high)
     }
 
     fn same_ok(&self, other: &Self) -> Val<bool> {
@@ -270,14 +286,13 @@ impl<T: HwType + Copy + Conv<T::Val>, E: HwType + Copy + Conv<E::Val>, I: IntSca
     }
 }
 
-fn unordered() -> ! {
-    panic!("ordering comparisons of Results aren't supported in #[handwired] functions; compare their values")
-}
-
 impl<T: HwType, E: HwType> Cmp<ResultHw<T, E>> for ResultHw<T, E> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: ResultHw<T, E>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: ResultHw<T, E>) -> Val<bool> {
+        let (mut left_cells, mut right_cells) = (Vec::new(), Vec::new());
+        <Result<T, E> as HwType>::outputs(&self, &mut left_cells);
+        <Result<T, E> as HwType>::outputs(&right, &mut right_cells);
+        cells_compare(&left_cells, relation, &right_cells)
     }
     fn equal(self, right: ResultHw<T, E>, equal: bool) -> Val<bool> {
         // Both `Ok` with equal values, or both `Err` with equal errors.
@@ -288,8 +303,8 @@ impl<T: HwType, E: HwType> Cmp<ResultHw<T, E>> for ResultHw<T, E> {
 }
 impl<T: HwType + Conv<T::Val>, E: HwType + Conv<E::Val>> Cmp<Result<T, E>> for ResultHw<T, E> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: Result<T, E>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: Result<T, E>) -> Val<bool> {
+        self.compare(relation, right.conv())
     }
     fn equal(self, right: Result<T, E>, equal: bool) -> Val<bool> {
         // The right side's variant is known while the circuit is built.
@@ -302,17 +317,18 @@ impl<T: HwType + Conv<T::Val>, E: HwType + Conv<E::Val>> Cmp<Result<T, E>> for R
 }
 impl<T: HwType + Conv<T::Val>, E: HwType + Conv<E::Val>> Cmp<ResultHw<T, E>> for Result<T, E> {
     type Output = Val<bool>;
-    fn compare(self, _: Relation, _: ResultHw<T, E>) -> Val<bool> {
-        unordered()
+    fn compare(self, relation: Relation, right: ResultHw<T, E>) -> Val<bool> {
+        let left: ResultHw<T, E> = self.conv();
+        left.compare(relation, right)
     }
     fn equal(self, right: ResultHw<T, E>, equal: bool) -> Val<bool> {
         right.equal(self, equal)
     }
 }
-impl<T: PartialEq, E: PartialEq> Cmp<Result<T, E>> for Result<T, E> {
+impl<T: HwType + PartialEq, E: HwType + PartialEq> Cmp<Result<T, E>> for Result<T, E> {
     type Output = bool;
-    fn compare(self, _: Relation, _: Result<T, E>) -> bool {
-        unordered()
+    fn compare(self, relation: Relation, right: Result<T, E>) -> bool {
+        compare_encoded(&self, relation, &right)
     }
     fn equal(self, right: Result<T, E>, equal: bool) -> bool {
         (self == right) == equal
