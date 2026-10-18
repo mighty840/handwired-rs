@@ -16,7 +16,10 @@ use crate::wire::Wire;
 /// What a parameter declares with `#[range(lo, hi)]`, `#[ranges([...])]` and `#[grid(step)]`. A parameter of a
 /// compound type, e.g. `[u8; 4]`, applies `range` and `grid` to each scalar; `ranges` gives one range per scalar, in
 /// [`HwType::encode`] order.
+///
+/// Build one with [`Attrs::new`] or start from [`Attrs::NONE`]; fields may be added in minor releases.
 #[derive(Copy, Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Attrs {
     pub range: Option<(f64, f64)>,
     pub grid: Option<f64>,
@@ -28,6 +31,11 @@ pub struct Attrs {
 
 impl Attrs {
     pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None, holds_zero: false };
+
+    /// What `#[range(lo, hi)]`, `#[grid(step)]` and `#[ranges([...])]` declare.
+    pub const fn new(range: Option<(f64, f64)>, grid: Option<f64>, ranges: Option<&'static [(f64, f64)]>) -> Attrs {
+        Attrs { range, grid, ranges, holds_zero: false }
+    }
 
     /// These attributes for cells that hold 0 where their variant isn't the value's.
     pub fn holding_zero(&self) -> Attrs {

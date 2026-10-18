@@ -218,7 +218,7 @@ fn expand(mut function: ItemFn) -> syn::Result<Tokens> {
         if param.range.is_some() && param.ranges.is_some() {
             return syn::Error::new(param.name.span(), "use either #[range] or #[ranges], not both").to_compile_error();
         }
-        quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid, ranges: #ranges, holds_zero: false })
+        quote!(::handwired_rs::dsl::Attrs::new(#range, #grid, #ranges))
     });
     let declarations = params.iter().enumerate().map(|(index, param)| {
         let (name, ty) = (&param.name, &param.ty);

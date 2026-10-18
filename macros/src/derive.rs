@@ -252,7 +252,7 @@ fn field_attrs(attributes: &[syn::Attribute]) -> syn::Result<Tokens> {
             grid = quote!(Some((#step) as f64));
         }
     }
-    Ok(quote!(::handwired_rs::dsl::Attrs { range: #range, grid: #grid, ranges: #ranges, holds_zero: false }))
+    Ok(quote!(::handwired_rs::dsl::Attrs::new(#range, #grid, #ranges)))
 }
 
 /// A fieldless enum as a scalar: its discriminant in one cell.
@@ -583,7 +583,7 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                 if attrs.ranges.is_some() {
                     attrs.part(0, 1)
                 } else {
-                    #dsl::Attrs { range: Some((0.0, #last)), ..#dsl::Attrs::NONE }
+                    #dsl::Attrs::new(Some((0.0, #last)), None, None)
                 }
             }
 
@@ -594,7 +594,7 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                     attrs.expect_cells(<Self as #dsl::HwType>::CELLS);
                     let tag = tag_attrs(attrs);
                     #hw_name {
-                        __tag: #dsl::declare_scalar::<u8>(inputs, &#dsl::Attrs { holds_zero: attrs.holds_zero, ..tag }),
+                        __tag: #dsl::declare_scalar::<u8>(inputs, &if attrs.holds_zero { tag.holding_zero() } else { tag }),
                         #(
                             #hw_fields: {
                                 let cells = <#types as #dsl::HwType>::CELLS;
