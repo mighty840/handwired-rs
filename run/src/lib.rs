@@ -294,7 +294,7 @@ fn check(bytes: &[u8], layer: &Layer, available: usize, gather_slots: usize) -> 
     for _ in 0..layer.index_reads.1 {
         let (row, index_row, flags) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
         let count = word(bytes, at + 12) as usize;
-        if row >= layer.rows || index_row >= layer.rows || flags > 3 || count == 0 {
+        if row >= layer.rows || index_row >= layer.rows || flags > 3 || count == 0 || count > 1 << 24 {
             return Err(fail("an index read names a row the layer doesn't have, or no candidates"));
         }
         positions(at + 16, count)?;
@@ -449,9 +449,10 @@ impl<'a> Program<'a> {
             return Err(Error::OutputLength { expected: self.root_count, actual: outputs.len() });
         }
         for (index, &value) in inputs.iter().enumerate() {
+            // The same test as `value as f64` within the f64 bounds, but on f32: the bounds' conversion depends only
+            // on the program, so the time doesn't depend on the inputs on chips whose FPU lacks f64.
             let (low, high) = self.input_range(index).unwrap_or((f64::NAN, f64::NAN));
-            let wide = value as f64;
-            if !(wide >= low && wide <= high) {
+            if !(value >= f32_at_least(low) && value <= f32_at_most(high)) {
                 return Err(Error::InputOutOfRange { index, value });
             }
         }
@@ -509,19 +510,15 @@ impl<'a> Program<'a> {
                 let (row, index_row, flags) =
                     (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
                 let count = word(bytes, at + 12) as usize;
-                let index = projection[index_row] as f64;
-                let position = if index < 0.0 {
-                    (flags & 1 == 0).then_some(0)
-                } else if index >= count as f64 {
-                    (flags & 2 == 0).then_some(count - 1)
-                } else {
-                    Some(index as usize)
-                };
-                projection[row] = match position {
-                    _ if index.is_nan() => f32::NAN,
-                    Some(position) => values[word_at(bytes, at + 16, position) as usize],
-                    None => 0.0,
-                };
+                // Without branches on the index: the candidate at the clamped position, masked to 0 where the index
+                // is past an end whose rule is 0. Comparing in f32 is exact, since tables hold at most 2^24 entries.
+                let index = projection[index_row];
+                let below = index < 0.0;
+                let above = index >= count as f32;
+                let position = (index as i32).clamp(0, count as i32 - 1) as usize;
+                let zero = (below & (flags & 1 != 0)) | (above & (flags & 2 != 0));
+                let candidate = values[word_at(bytes, at + 16, position) as usize];
+                projection[row] = if index.is_nan() { f32::NAN } else { keep_if(!zero, candidate) };
                 at += 16 + 4 * count;
             }
             for gate in 0..layer.gates.1 {
@@ -551,19 +548,91 @@ impl<'a> Program<'a> {
     }
 }
 
+/// The least f32 at or above `bound`: an f32 is at least `bound` exactly when it's at least this.
+fn f32_at_least(bound: f64) -> f32 {
+    let near = bound as f32;
+    if (near as f64) < bound {
+        next_f32(near, true)
+    } else {
+        near
+    }
+}
+
+/// The greatest f32 at or below `bound`.
+fn f32_at_most(bound: f64) -> f32 {
+    let near = bound as f32;
+    if (near as f64) > bound {
+        next_f32(near, false)
+    } else {
+        near
+    }
+}
+
+/// The next f32 up or down from a finite `value`.
+fn next_f32(value: f32, up: bool) -> f32 {
+    if value == 0.0 {
+        let tiny = f32::from_bits(1);
+        return if up { tiny } else { -tiny };
+    }
+    let bits = value.to_bits();
+    let away = (value > 0.0) == up;
+    f32::from_bits(if away { bits + 1 } else { bits - 1 })
+}
+
 /// `max(0, value)`, keeping NaN.
 fn relu(value: f32) -> f32 {
-    if value > 0.0 {
-        value
-    } else if value.is_nan() {
-        f32::NAN
-    } else {
-        0.0
+    if value.is_nan() {
+        return f32::NAN;
     }
+    // A mask rather than a branch on the sign, so a run's time doesn't depend on the values: the value where it's
+    // positive, else +0.
+    keep_if(value > 0.0, value)
+}
+
+/// `value` where `keep`, else +0, without a branch.
+fn keep_if(keep: bool, value: f32) -> f32 {
+    f32::from_bits(value.to_bits() & 0u32.wrapping_sub(keep as u32))
 }
 
 /// A score within 0..1 rounded to 0 below 0.5 and 1 from 0.5: `(score + 8,388,609) - 8,388,609` in f32.
 fn round_boolean(score: f32) -> f32 {
     const BASE: f32 = 8_388_609.0;
     (score + BASE) - BASE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The f32 range test accepts exactly the values the f64 test does.
+    #[test]
+    fn f32_bounds_match_f64_comparisons() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        let specials = [0.0, -0.0, 1e-40, -1e-40, 0.1, -0.1, 16_777_217.0, 3.4e38, 1e300, -1e300, f64::INFINITY];
+        for round in 0..200_000 {
+            let bound = if round < specials.len() * 8 {
+                specials[round % specials.len()]
+            } else {
+                f64::from_bits(next()) % 1e6
+            };
+            if bound.is_nan() {
+                continue;
+            }
+            let near = bound as f32;
+            let candidates = [near, next_f32(near, true), next_f32(near, false), f32::from_bits(next() as u32)];
+            for value in candidates {
+                if value.is_nan() || !near.is_finite() && value == near {
+                    continue;
+                }
+                assert_eq!(value >= f32_at_least(bound), value as f64 >= bound, "{value} >= {bound}");
+                assert_eq!(value <= f32_at_most(bound), value as f64 <= bound, "{value} <= {bound}");
+            }
+        }
+    }
 }

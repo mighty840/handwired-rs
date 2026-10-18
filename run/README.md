@@ -88,8 +88,14 @@ $ printf '200 21 0\n215 20 1\n' | handwired-run heater.hwc
 - Run time with software floating point varies with the values, even though the operations don't: each soft-float
   add or multiply takes longer or shorter depending on its operands. On the WL55 the spread between the fastest and
   slowest record was 0.4% for the heater logic and up to 17% for bit-heavy programs. A worst case still exists
-  (the operation count times the slowest soft-float operation), but measure it per program. On a hardware FPU each
-  add and multiply takes fixed time, except that some FPUs slow down on subnormal numbers.
+  (the operation count times the slowest soft-float operation), but measure it per program.
+- With a hardware FPU, run time is nearly fixed. On an STM32H563 (Cortex-M33 with an FPU) 12 benchmark programs
+  ran 102 records each. Taking the fastest of 5 timed runs per record, so that stray stalls such as the debugger
+  reading over the bus drop out, each program's slowest record took 3 to 24 cycles longer than its fastest, out of
+  27,900 to 2.57 million (at most 0.03%). The same functions compiled natively varied by up to 54%, and run through
+  the wasmi Wasm interpreter by up to 35%. The runner avoids branching on values to get there: ReLU, table reads and
+  the input range check use masks and f32 comparisons, so nothing waits on a branch whose direction depends on the
+  data, or on f64 arithmetic that an FPU without f64 does in software.
 
 ## Cost
 
@@ -103,8 +109,10 @@ program from its bytes as it goes. Measured times:
 | Division (tables and long division) | 20.9 KB | 573 | | 203k cycles, 6.3 ms |
 | 1,129-operation 64-bit hash | 84 KB | 1,190 | about 21 µs | 1.87M cycles, 58 ms |
 
-A circuit evaluates every path, so the same logic in plain Rust is much faster. What this buys is a fixed list of
-operations, exactness and the program as data, not speed.
+A circuit evaluates every path, so the same logic in plain Rust is much faster. On the H563, the 12 benchmark
+programs took 136 to 10,600 times the cycles of native code, and 4 to 290 times those of wasmi. What this buys is
+a fixed list of operations, exactness and the program as data, not speed. The runner itself is about 6 KB of
+code.
 
 ## Format
 

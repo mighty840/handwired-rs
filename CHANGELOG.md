@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- handwired-rs-run takes the same time whatever the values, as far as the chip allows:
+  - ReLU and table reads use masks instead of branches on the data;
+  - table reads and the input range check compare in f32, so FPUs without f64 don't call software routines whose
+    time depends on the values.
+  On an STM32H563 the slowest record of each benchmark took 3 to 24 cycles longer than its fastest (at most 0.03%),
+  down from 10 to 116. Results are unchanged; tables over 2^24 entries are refused at load.
 - meta-handwired, a Yocto/OpenEmbedded layer (scarthgap): a `handwired-run` recipe (also native and nativesdk),
   `handwired-program.bbclass`, which installs `.hwc` programs under `/usr/share/handwired` with a sha256 manifest
   after checking each at build time, an example program, and runtime tests for `testimage`. CI builds
