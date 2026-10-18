@@ -1,0 +1,68 @@
+name: Yocto
+
+# A full poky build is long, so it runs when the layer or the runner changes, and on demand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["meta-handwired/**", "run/**", ".github/workflows/yocto.yml"]
+
+jobs:
+  scarthgap:
+    name: meta-handwired on scarthgap (build, then test the image in QEMU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      KAS_WORK_DIR: /mnt/yocto
+      KAS_FILE: meta-handwired/kas/scarthgap-qemux86-64.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Free disk space and prepare the build directory
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo mkdir -p /mnt/yocto && sudo chown "$USER" /mnt/yocto
+          df -h / /mnt
+      - name: Host packages for bitbake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gawk wget git diffstat unzip texinfo gcc build-essential chrpath socat cpio \
+            python3 python3-pip python3-pexpect xz-utils debianutils iputils-ping python3-git python3-jinja2 \
+            python3-subunit zstd liblz4-tool file locales libacl1
+          pipx install kas
+          sudo locale-gen en_US.UTF-8
+          # Ubuntu 24.04 stops unprivileged user namespaces, which bitbake uses to cut tasks off the network.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Let QEMU use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Use this commit's handwired-rs-run (it isn't on crates.io yet)
+        run: |
+          cargo package -p handwired-rs-run
+          crate=target/package/handwired-rs-run-0.1.0.crate
+          sum=$(sha256sum "$crate" | cut -d' ' -f1)
+          # The recipe fetches crate://crates.io/handwired-rs-run/0.1.0; with the package already in the download
+          # directory and its checksum in the recipe, the fetcher takes it from there.
+          sed -i "s/^SRC_URI\[handwired-rs-run.sha256sum\] = .*/SRC_URI[handwired-rs-run.sha256sum] = \"$sum\"/" \
+            meta-handwired/recipes-handwired/handwired-run/handwired-run_0.1.0.bb
+          grep -n "sha256sum" meta-handwired/recipes-handwired/handwired-run/handwired-run_0.1.0.bb
+          mkdir -p /mnt/yocto/build/downloads && cp "$crate" /mnt/yocto/build/downloads/
+      - name: The example program is what export_heater writes
+        run: |
+          cargo run --release -p handwired-rs-run --example export_heater -- /tmp/heater.hwc
+          cmp /tmp/heater.hwc meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
+      - name: Build the image
+        run: kas build "$KAS_FILE"
+      - name: Test the image in QEMU
+        run: kas shell "$KAS_FILE" -c "bitbake core-image-minimal -c testimage"
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yocto-logs
+          path: |
+            /mnt/yocto/build/tmp/log/
+            /mnt/yocto/build/tmp/work/*/core-image-minimal/*/testimage/
+            /mnt/yocto/build/tmp/work/*/handwired-*/*/temp/log.*
+          if-no-files-found: ignore

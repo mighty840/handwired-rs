@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- meta-handwired, a Yocto/OpenEmbedded layer (scarthgap): a `handwired-run` recipe (also native and nativesdk),
+  `handwired-program.bbclass`, which installs `.hwc` programs under `/usr/share/handwired` with a sha256 manifest
+  after checking each at build time, an example program, and runtime tests for `testimage`. CI builds
+  `core-image-minimal` and tests it under QEMU. handwired-rs-run supports Rust 1.75 (edition 2021), and the workspace
+  uses resolver 2 and a version 3 lockfile so its packages stay readable by older Cargo.
 - New crate handwired-rs-run 0.1.0: runs exported programs without handwired-rs. It is `no_std`, with no allocation,
   dependencies or `unsafe`, and builds for Cortex-M0, Cortex-M4F/M7 and RV32IMC. It is bit-exact with
   `TensorExecutor` on every value. It refuses inputs outside the declared ranges, and refuses damaged bytes at load

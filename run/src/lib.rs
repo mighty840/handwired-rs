@@ -236,7 +236,7 @@ impl Layer {
 /// A check of one layer against the values before it: everything [`Program::run`] indexes is in bounds.
 fn check(bytes: &[u8], layer: &Layer, available: usize, gather_slots: usize) -> Result<(), Error> {
     let fail = Error::Malformed;
-    if layer.output_size.checked_add(layer.gates.1).is_none_or(|needed| needed > layer.rows) {
+    if layer.output_size.checked_add(layer.gates.1).map_or(true, |needed| needed > layer.rows) {
         return Err(fail("a layer has fewer rows than its outputs and gates"));
     }
     let entries = layer.entries;

@@ -3,7 +3,7 @@
 
 use handwired_rs::dsl::HwType;
 use handwired_rs::{
-    Circuit, OutOfRange, TensorExecutor, TensorProgram, Wire, emit_argmax, emit_first_active, handwired,
+    emit_argmax, emit_first_active, handwired, Circuit, OutOfRange, TensorExecutor, TensorProgram, Wire,
 };
 use handwired_rs_run::{Error, Program};
 

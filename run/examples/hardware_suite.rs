@@ -6,7 +6,7 @@
 //! little flash. `--corrupt` flips one expected bit in the first case, to see the check fail.
 
 use handwired_rs::dsl::HwType;
-use handwired_rs::{Circuit, TensorExecutor, TensorProgram, Wire, emit_argmax, emit_first_active, handwired};
+use handwired_rs::{emit_argmax, emit_first_active, handwired, Circuit, TensorExecutor, TensorProgram, Wire};
 
 /// A heater's duty from a temperature in tenths of a degree and a setpoint in degrees: firmware-style logic.
 #[handwired]
@@ -168,7 +168,11 @@ fn records(program: &TensorProgram, count: usize, seed: u64) -> Vec<Vec<f32>> {
                     };
                     let cell_value = value as f32;
                     let inside = (cell_value as f64) >= range.min && (cell_value as f64) <= range.max;
-                    if inside { cell_value } else { range.min as f32 }
+                    if inside {
+                        cell_value
+                    } else {
+                        range.min as f32
+                    }
                 })
                 .collect(),
         );

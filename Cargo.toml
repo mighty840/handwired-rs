@@ -14,6 +14,8 @@ handwired-rs-macros = { path = "macros", version = "0.5.0" }
 
 [workspace]
 members = ["macros", "gpu", "run"]
+# Resolver 2, so packaged crates stay readable by older Cargo (handwired-rs-run supports Rust 1.75).
+resolver = "2"
 
 [dev-dependencies]
 sha1_smol = "1.0.1"
