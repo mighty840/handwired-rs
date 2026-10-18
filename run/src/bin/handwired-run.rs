@@ -60,7 +60,10 @@ fn describe(program: &Program) {
     );
     for index in 0..program.input_count() {
         if let Some((low, high)) = program.input_range(index) {
-            println!("input {index}: {low}..={high}");
+            match program.input_grid(index) {
+                Some(step) => println!("input {index}: {low}..={high} in steps of {step}"),
+                None => println!("input {index}: {low}..={high}"),
+            }
         }
     }
 }

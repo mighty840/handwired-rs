@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Program format version 2 carries each input cell's grid, and handwired-rs-run refuses inputs between its steps,
+  e.g. 0.5 for an integer, a `bool` or an enum's variant, with `Error::InputOffGrid`. Such inputs used to run and give
+  results the function never could (a vending machine's state tag of 0.5 gave a credit of 75), since a circuit is
+  only exact on its grids. The check reads the value's bits, so its time doesn't depend on the value.
+  `Program::input_grid` gives each cell's step, and `handwired-run --info` prints it. Version 1 programs still run,
+  checked against their ranges only. `TensorProgram::to_bytes` and `Compiled::export` write version 2.
 - handwired-rs-run takes the same time whatever the values, as far as the chip allows:
   - ReLU and table reads use masks instead of branches on the data;
   - table reads and the input range check compare in f32, so FPUs without f64 don't call software routines whose

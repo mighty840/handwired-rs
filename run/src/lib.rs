@@ -7,7 +7,8 @@
 //! Every run does the same operations in the same order whatever the inputs, so its time is bounded by the program:
 //! it doesn't vary at all where each f32 operation takes fixed time, as on hardware FPUs, and only by how long each
 //! operation takes where that depends on the values, as in software floating point. Inputs outside the ranges the
-//! function declared are refused, since the circuit is only exact within them.
+//! function declared, or between the steps of their grids (e.g. 0.5 for an integer), are refused, since the circuit
+//! is only exact on them.
 //!
 //! ```
 //! # fn demo(bytes: &[u8]) -> Result<(), handwired_rs_run::Error> {
@@ -34,8 +35,8 @@ use core::fmt;
 
 /// The first 8 bytes of every program.
 pub const MAGIC: [u8; 8] = *b"HWCIRC\0\0";
-/// The format version this crate reads.
-pub const FORMAT_VERSION: u32 = 1;
+/// The format version this crate reads, and the newest: version 1, which carries no grids, is read too.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Why a program can't be read or run.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +66,16 @@ pub enum Error {
         /// Its value.
         value: f32,
     },
+    /// An input cell isn't a whole multiple of its grid's step, e.g. 0.5 for an integer, where the circuit isn't
+    /// exact.
+    InputOffGrid {
+        /// Which cell.
+        index: usize,
+        /// Its value.
+        value: f32,
+        /// The step its values are multiples of.
+        step: f64,
+    },
     /// The scratch memory is smaller than [`Program::scratch_len`].
     ScratchTooSmall {
         /// The cells needed.
@@ -87,13 +98,16 @@ impl fmt::Display for Error {
             Error::Truncated => write!(f, "the program's bytes end early"),
             Error::NotAProgram => write!(f, "not a handwired program"),
             Error::UnsupportedVersion(version) => {
-                write!(f, "program format version {version}; this runner reads version {FORMAT_VERSION}")
+                write!(f, "program format version {version}; this runner reads versions 1 to {FORMAT_VERSION}")
             }
             Error::Checksum => write!(f, "the program's checksum doesn't match its bytes"),
             Error::Malformed(what) => write!(f, "malformed program: {what}"),
             Error::InputLength { expected, actual } => write!(f, "{actual} input cells for a program of {expected}"),
             Error::InputOutOfRange { index, value } => {
                 write!(f, "input cell {index} is {value}, outside the range its function declared")
+            }
+            Error::InputOffGrid { index, value, step } => {
+                write!(f, "input cell {index} is {value}, not a multiple of {step}, the step its function declared")
             }
             Error::ScratchTooSmall { needed, actual } => {
                 write!(f, "{actual} scratch cells; the program needs {needed}")
@@ -314,6 +328,8 @@ pub struct Program<'a> {
     root_count: usize,
     layer_count: usize,
     sources: usize,
+    /// Bytes per source cell: its range, and in version 2 its grid.
+    source_bytes: usize,
     roots: usize,
     layers: usize,
     max_rows: usize,
@@ -331,9 +347,10 @@ impl<'a> Program<'a> {
         }
         let mut reader = Reader { bytes, at: MAGIC.len() };
         let version = reader.u32()?;
-        if version != FORMAT_VERSION {
+        if version != 1 && version != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion(version));
         }
+        let source_bytes = if version == 1 { 16 } else { 24 };
         let Some(body_length) = bytes.len().checked_sub(4).filter(|&length| length >= reader.at) else {
             return Err(Error::Truncated);
         };
@@ -349,7 +366,15 @@ impl<'a> Program<'a> {
         let gather_slots = reader.count()?;
         let root_count = reader.count()?;
         let layer_count = reader.count()?;
-        let sources = reader.words(source_size.checked_mul(4).ok_or(Error::Truncated)?)?;
+        let sources = reader.words(source_size.checked_mul(source_bytes / 4).ok_or(Error::Truncated)?)?;
+        if source_bytes == 24 {
+            for index in 0..source_size {
+                let step = f64_at(bytes, sources + 24 * index + 16);
+                if step != 0.0 && grid_exponent(step).is_none() {
+                    return Err(Error::Malformed("a grid step isn't 0 or a power of two from 2^-149 to 2^127"));
+                }
+            }
+        }
         let roots = reader.words(root_count)?;
         for index in 0..root_count {
             if word_at(bytes, roots, index) as usize >= value_count {
@@ -391,6 +416,7 @@ impl<'a> Program<'a> {
             root_count,
             layer_count,
             sources,
+            source_bytes,
             roots,
             layers,
             max_rows,
@@ -425,9 +451,18 @@ impl<'a> Program<'a> {
     /// The range declared for input cell `index`, inclusive.
     pub fn input_range(&self, index: usize) -> Option<(f64, f64)> {
         (index < self.source_size).then(|| {
-            let at = self.sources + 16 * index;
+            let at = self.sources + self.source_bytes * index;
             (f64_at(self.bytes, at), f64_at(self.bytes, at + 8))
         })
+    }
+
+    /// The step input cell `index`'s values are whole multiples of, e.g. 1 for an integer; `None` where any f32 in
+    /// its range is allowed, and for every cell of a version 1 program, which carries no grids.
+    pub fn input_grid(&self, index: usize) -> Option<f64> {
+        if index >= self.source_size || self.source_bytes < 24 {
+            return None;
+        }
+        Some(f64_at(self.bytes, self.sources + 24 * index + 16)).filter(|&step| step != 0.0)
     }
 
     /// The f32 cells of scratch memory [`Program::run`] needs.
@@ -437,7 +472,7 @@ impl<'a> Program<'a> {
 
     /// Evaluate the program on `inputs`, writing its outputs. `scratch` holds at least [`Program::scratch_len`]
     /// cells; afterwards its first [`Program::value_count`] cells hold every value the run computed, in program
-    /// order. Inputs outside their declared ranges are refused.
+    /// order. Inputs outside their declared ranges or off their grids are refused.
     pub fn run(&self, inputs: &[f32], scratch: &mut [f32], outputs: &mut [f32]) -> Result<(), Error> {
         if inputs.len() != self.source_size {
             return Err(Error::InputLength { expected: self.source_size, actual: inputs.len() });
@@ -454,6 +489,12 @@ impl<'a> Program<'a> {
             let (low, high) = self.input_range(index).unwrap_or((f64::NAN, f64::NAN));
             if !(value >= f32_at_least(low) && value <= f32_at_most(high)) {
                 return Err(Error::InputOutOfRange { index, value });
+            }
+            if let Some(step) = self.input_grid(index) {
+                // parse checked that every step has an exponent.
+                if !on_grid(value, grid_exponent(step).unwrap_or(0)) {
+                    return Err(Error::InputOffGrid { index, value, step });
+                }
             }
         }
         let bytes = self.bytes;
@@ -579,6 +620,31 @@ fn next_f32(value: f32, up: bool) -> f32 {
     f32::from_bits(if away { bits + 1 } else { bits - 1 })
 }
 
+/// `k` where `step` is 2^k, a grid step the format allows: 2^-149 to 2^127.
+fn grid_exponent(step: f64) -> Option<i32> {
+    let bits = step.to_bits();
+    let exponent = ((bits >> 52) & 0x7FF) as i32 - 1023;
+    let power_of_two = bits >> 63 == 0 && bits & ((1 << 52) - 1) == 0;
+    (power_of_two && (-149..=127).contains(&exponent)).then_some(exponent)
+}
+
+/// Whether a finite `value` is a whole multiple of 2^`exponent`, from its bits alone, so neither the time nor the
+/// result depends on how a chip rounds: no float operations and no branches on the value.
+fn on_grid(value: f32, exponent: i32) -> bool {
+    let bits = value.to_bits();
+    let field = ((bits >> 23) & 0xFF) as i32;
+    let normal = field != 0;
+    // value = ±significand × 2^scale with an integer significand; subnormals have scale -149 like the smallest
+    // normals.
+    let significand = (bits & 0x7F_FFFF) | ((normal as u32) << 23);
+    let scale = field - 150 + !normal as i32;
+    // The significand's bits worth less than 2^exponent must be zero.
+    let low_bits = (exponent - scale).clamp(0, 32) as u32;
+    // (2^low_bits) - 1 in 32-bit shifts, which chips without 64-bit ones do in fixed time: all ones at 32.
+    let mask = (1u32 << (low_bits & 31)).wrapping_sub(1) | 0u32.wrapping_sub(low_bits >> 5);
+    significand & mask == 0
+}
+
 /// `max(0, value)`, keeping NaN.
 fn relu(value: f32) -> f32 {
     if value.is_nan() {
@@ -603,6 +669,48 @@ fn round_boolean(score: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bit test agrees with dividing by the step in f64, which is exact for these values and steps.
+    #[test]
+    fn grid_test_matches_division() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        let specials = [0.0, -0.0, 0.5, -0.5, 1.0, 1.5, 3.0, -7.0, 0.25, 16_777_216.0, 16_777_215.0, 1e-45, 3.4e38];
+        for round in 0..300_000 {
+            let value = if round < specials.len() { specials[round] } else { f32::from_bits(next() as u32) };
+            if !value.is_finite() {
+                continue;
+            }
+            for exponent in [-149, -126, -20, -2, -1, 0, 1, 3, 23, 24, 30, 127] {
+                let scaled = value as f64 / power_of_two(exponent);
+                // Every f64 of magnitude 2^53 or more is whole.
+                let whole = !(-9e15..=9e15).contains(&scaled) || scaled == (scaled as i64) as f64;
+                assert_eq!(on_grid(value, exponent), whole, "{value} on 2^{exponent}");
+            }
+        }
+        assert!(on_grid(20.0, 0) && !on_grid(19.5, 0) && on_grid(19.5, -1) && !on_grid(6.0, 2));
+    }
+
+    /// 2^`exponent` for exponents an f64 holds as a normal number.
+    fn power_of_two(exponent: i32) -> f64 {
+        f64::from_bits(((exponent + 1023) as u64) << 52)
+    }
+
+    #[test]
+    fn grid_steps_are_powers_of_two() {
+        assert_eq!(grid_exponent(1.0), Some(0));
+        assert_eq!(grid_exponent(0.25), Some(-2));
+        assert_eq!(grid_exponent(power_of_two(-149)), Some(-149));
+        assert_eq!(grid_exponent(power_of_two(127)), Some(127));
+        for step in [0.0, -1.0, 3.0, 0.3, power_of_two(-150), power_of_two(128), f64::INFINITY, f64::NAN] {
+            assert_eq!(grid_exponent(step), None, "{step}");
+        }
+    }
 
     /// The f32 range test accepts exactly the values the f64 test does.
     #[test]

@@ -34,7 +34,7 @@ fn the_command_runs_records_and_describes_programs() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"200 21 0\n215, 20, 1\n9999 20 0\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"200 21 0\n215, 20, 1\n9999 20 0\n200.5 21 0\n").unwrap();
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -43,13 +43,14 @@ fn the_command_runs_records_and_describes_programs() {
         .join("\n");
     assert_eq!(stdout.trim_end(), expected);
     assert!(stderr.contains("line 3: input cell 0 is 9999"), "{stderr}");
+    assert!(stderr.contains("line 4: input cell 0 is 200.5, not a multiple of 1"), "{stderr}");
     assert!(!output.status.success(), "a refused record fails the run");
 
     let info = Command::new(env!("CARGO_BIN_EXE_handwired-run")).arg("--info").arg(&path).output().unwrap();
     let info = String::from_utf8(info.stdout).unwrap();
     assert!(info.starts_with("heater\nparameters: (i16, i16, bool)\nresult: (u8, bool)"), "{info}");
     assert!(info.contains("3 input cells, 2 output cells"), "{info}");
-    assert!(info.contains("input 1: 5..=30"), "{info}");
+    assert!(info.contains("input 1: 5..=30 in steps of 1"), "{info}");
 
     std::fs::remove_dir_all(&directory).unwrap();
 }

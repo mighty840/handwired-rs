@@ -5,7 +5,8 @@ written as an ordinary Rust function, checked against itself and exported as a `
 data:
 
 - `handwired-run`, from the `handwired-rs-run` crate, runs a program over records on standard input. Results are
-  bit-exact with handwired-rs's CPU executor. It refuses inputs outside the declared ranges and damaged files.
+  bit-exact with handwired-rs's CPU executor. It refuses inputs outside the declared ranges or off their
+  grids (e.g. 0.5 for an integer) and damaged files.
 - `handwired-program.bbclass` installs programs under `/usr/share/handwired` with a `sha256sum` manifest. Each file
   is checked with `handwired-run --info` at build time, and the image's SPDX output records each program's hash.
 - `handwired-heater` is an example program, exported by `run/examples/export_heater.rs`.

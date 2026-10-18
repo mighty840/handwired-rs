@@ -418,7 +418,7 @@ function and checked with `verify()` then ships to a device as a file:
 - results are bit-exact with the CPU executor wherever f32 arithmetic is IEEE 754;
 - the file's hash says which logic ran.
 
-Inputs outside the declared ranges and damaged files are refused. With its `std` feature it adds `handwired-run`, a
+Inputs outside the declared ranges or off their grids (e.g. 0.5 for an integer) and damaged files are refused. With its `std` feature it adds `handwired-run`, a
 command that runs a program over records on standard input. A run costs about 1.3x the CPU executor. On an
 STM32WL55 (Cortex-M4 without an FPU), every output of 8 test programs matched the host bit for bit; heater-style
 logic took 1.7 ms at 32 MHz.

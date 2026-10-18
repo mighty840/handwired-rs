@@ -1,4 +1,4 @@
-# Runs the example program on the image: the runner, the installed program, its manifest, and a refused input.
+# Runs the example program on the image: the runner, the installed program, its manifest, and refused inputs.
 
 from oeqa.core.decorator.depends import OETestDepends
 from oeqa.runtime.case import OERuntimeTestCase
@@ -31,3 +31,10 @@ class HandwiredTest(OERuntimeTestCase):
         status, output = self.target.run("echo '9999 20 0' | handwired-run %s" % self.PROGRAM)
         self.assertNotEqual(status, 0, msg=output)
         self.assertIn('outside the range', output)
+
+    @OETestDepends(['handwired.HandwiredTest.test_program_runs'])
+    def test_off_grid_input_is_refused(self):
+        # Temperatures are whole tenths: half a tenth is between the steps the function declared.
+        status, output = self.target.run("echo '200.5 21 0' | handwired-run %s" % self.PROGRAM)
+        self.assertNotEqual(status, 0, msg=output)
+        self.assertIn('not a multiple of 1', output)

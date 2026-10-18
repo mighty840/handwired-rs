@@ -275,6 +275,58 @@ fn inputs_outside_their_ranges_and_wrong_lengths_are_refused() {
 }
 
 #[test]
+fn inputs_off_their_grids_are_refused() {
+    let program = plan_circuit().program;
+    let bytes = program.to_bytes("plan");
+    let parsed = Program::parse(&bytes).unwrap();
+    let on_grid = records(&program, 0, 1).remove(0);
+    evaluate(&parsed, &on_grid).unwrap();
+    // Every integer cell: half a step off is refused, a whole step is not.
+    for cell in 0..program.source_size {
+        assert_eq!(parsed.input_grid(cell), program.grids[cell]);
+        if program.grids[cell] != Some(1.0) || program.ranges[cell].min == program.ranges[cell].max {
+            continue;
+        }
+        let mut record = on_grid.clone();
+        record[cell] += 0.5;
+        let error = evaluate(&parsed, &record).unwrap_err();
+        assert_eq!(error, Error::InputOffGrid { index: cell, value: record[cell], step: 1.0 });
+        record[cell] += 0.5;
+        evaluate(&parsed, &record).unwrap();
+    }
+    // Floats have no grid.
+    let physics = physics_circuit().program.to_bytes("physics");
+    let physics = Program::parse(&physics).unwrap();
+    assert_eq!(physics.input_grid(0), None);
+    evaluate(&physics, &[0.3, -1.7, 0.123]).unwrap();
+}
+
+/// Version 1, which has no grids, still runs: the same program with each source's step taken out.
+#[test]
+fn version_1_programs_run_without_grid_checks() {
+    let program = plan_circuit().program;
+    let bytes = program.to_bytes("plan");
+    let sources = 8 + 4 + 4 + "plan".len() + 5 * 4;
+    let mut old = bytes[..sources].to_vec();
+    old[8..12].copy_from_slice(&1u32.to_le_bytes());
+    for cell in 0..program.source_size {
+        old.extend_from_slice(&bytes[sources + 24 * cell..sources + 24 * cell + 16]);
+    }
+    old.extend_from_slice(&bytes[sources + 24 * program.source_size..bytes.len() - 4]);
+    let sum = handwired_rs_run::checksum(&old);
+    old.extend_from_slice(&sum.to_le_bytes());
+    let parsed = Program::parse(&old).unwrap();
+    let mut record = records(&program, 0, 1).remove(0);
+    assert_eq!(evaluate(&parsed, &record), evaluate(&Program::parse(&bytes).unwrap(), &record));
+    assert_eq!(parsed.input_grid(0), None);
+    let cell = (0..program.source_size)
+        .find(|&cell| program.grids[cell] == Some(1.0) && program.ranges[cell].max > program.ranges[cell].min)
+        .unwrap();
+    record[cell] += 0.5;
+    assert!(evaluate(&parsed, &record).is_ok());
+}
+
+#[test]
 fn compiled_functions_export_their_signature() {
     let bytes = divide_circuit().export("divide");
     let program = Program::parse(&bytes).unwrap();
@@ -291,8 +343,8 @@ fn damaged_bytes_are_refused_without_a_panic() {
     }
     assert_eq!(Program::parse(b"not a program at all").unwrap_err(), Error::NotAProgram);
     let mut newer = bytes.clone();
-    newer[8] = 2;
-    assert_eq!(Program::parse(&newer).unwrap_err(), Error::UnsupportedVersion(2));
+    newer[8] = 3;
+    assert_eq!(Program::parse(&newer).unwrap_err(), Error::UnsupportedVersion(3));
     // Any changed byte fails the checksum.
     for position in (12..bytes.len() - 4).step_by(7) {
         let mut damaged = bytes.clone();
