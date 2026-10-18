@@ -1,0 +1,28 @@
+[package]
+name = "handwired-run-check"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Firmware that checks handwired-rs-run on a microcontroller against the host's results"
+
+[features]
+# NUCLEO-WL55JC1: Cortex-M4 without an FPU, results over LPUART1 (the ST-LINK's virtual COM port) at 115200.
+wl55 = ["dep:stm32wl"]
+# QEMU's lm3s6965evb: Cortex-M3, results over semihosting.
+qemu = ["dep:cortex-m-semihosting"]
+
+[dependencies]
+handwired-rs-run-suite = { path = "../suite" }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+stm32wl = { version = "0.15", features = ["stm32wl5x_cm4", "rt"], optional = true }
+cortex-m-semihosting = { version = "0.5", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = 2
+
+[workspace]

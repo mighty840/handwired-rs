@@ -75,6 +75,34 @@ jobs:
             cargo build -p handwired-rs-run --lib --release --target "$target"
           done
 
+  qemu:
+    name: Run the runner on emulated Cortex-M0 and Cortex-M3 (QEMU)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi, thumbv7m-none-eabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+      - name: Write the suite (programs, inputs and the host's outputs)
+        run: cargo run --release -p handwired-rs-run --example hardware_suite -- run/hardware/firmware/suite.bin 60
+      - name: Run it on QEMU's lm3s6965evb (Cortex-M3) and microbit (Cortex-M0)
+        working-directory: run/hardware/firmware
+        run: |
+          set -o pipefail
+          cargo build --release --features qemu --target thumbv7m-none-eabi
+          cargo build --release --features qemu --target thumbv6m-none-eabi
+          timeout 600 qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic \
+            -semihosting-config enable=on,target=native \
+            -kernel target/thumbv7m-none-eabi/release/handwired-run-check | tee m3.txt
+          timeout 600 qemu-system-arm -machine microbit -nographic \
+            -semihosting-config enable=on,target=native \
+            -kernel target/thumbv6m-none-eabi/release/handwired-run-check | tee m0.txt
+          grep -q "=== 8 passed, 0 failed ===" m3.txt
+          grep -q "=== 8 passed, 0 failed ===" m0.txt
+
   package:
     name: Package the macro crate
     runs-on: ubuntu-24.04

@@ -8,6 +8,7 @@ keywords = ["circuit", "no-std", "embedded", "deterministic"]
 categories = ["no-std", "embedded", "science"]
 description = "Run exported handwired circuits: no_std, no allocation, no dependencies, bit-exact with the CPU reference"
 readme = "README.md"
+exclude = ["hardware"]
 
 [features]
 default = []

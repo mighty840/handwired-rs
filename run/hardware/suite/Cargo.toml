@@ -1,0 +1,12 @@
+[package]
+name = "handwired-rs-run-suite"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Checks handwired-rs-run on hardware: runs a suite of programs and compares every output bit with the host's"
+
+[dependencies]
+handwired-rs-run = { path = "../.." }
+
+[workspace]
