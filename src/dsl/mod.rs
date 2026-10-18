@@ -20,6 +20,7 @@ mod compiled;
 mod control;
 mod ops;
 mod option;
+mod result;
 mod wide;
 
 use std::cell::RefCell;
@@ -43,6 +44,7 @@ pub use control::{
 pub use handwired_rs_macros::HwType;
 pub use ops::{Cmp, Logic, RunningSum, and, cells_equal, compare_native, eq, ge, gt, le, lt, ne, or, running_sums};
 pub use option::{OptionHw, some};
+pub use result::{ResultHw, err, ok};
 
 thread_local! {
     static CONTEXT: RefCell<Option<Circuit>> = const { RefCell::new(None) };

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `Result<T, E>`, laid out and used like `Option`: `Ok(..)`/`Err(..)`, patterns, `==`/`!=`, `is_ok`, `is_err`, `ok`,
+  `err`, `unwrap_or`, `unwrap`, `expect`, `unwrap_err` and `expect_err`. `?` on a `Result` or an `Option` in a function
+  that returns one, leaving early like `return` (no `From` conversion of the error). `dsl` gains `ResultHw`, `ok` and
+  `err`.
 - A field of a struct or variant literal takes its type from the field, so plain integer literals in an `if`,
   `match`, block, tuple or array there work: `Action::Attack(if strong { 6 } else { 3 })` no longer makes an `i32`.
   Circuits that compiled before are unchanged. `dsl` gains `choose`.

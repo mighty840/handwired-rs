@@ -73,7 +73,7 @@ code like `a + b` or `x.min(y)` stays as written. The macro rewrites only what R
 Overflow and out-of-bounds indexing panic in the oracle, so their circuit values are unspecified. `verify` skips
 inputs where the oracle panics; run it with overflow checks on (e.g. a debug build).
 
-**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12), `Option<T>`, and
+**Supported:** `bool`, `u8`–`u64`, `i8`–`i64`, `usize`, `f32`, arrays, tuples (up to 12), `Option<T>`, `Result<T, E>`, and
 `#[derive(HwType)]` structs and enums (with or without data in their variants) as parameters (up to 16), results and
 locals;
 `+ - * !`, comparisons, `&& || & | ^`; integer `/` and `%` by a constant or an input value, see
@@ -86,7 +86,7 @@ consts; `for` over ranges or arrays that don't depend on the inputs (they unroll
 with `#[max_iterations(N)]`, see [Loops with a limit](#loops-with-a-limit); array reads and writes at computed
 indices, including nested arrays; calls to other `#[handwired]` functions; `handwired_rs::dsl::running_sums(array)`
 for integers (a loop in the function, a Brent-Kung prefix network of about 2 log2(n) layers in the circuit; call it by
-that path, since the macro treats a bare lowercase call as another `#[handwired]` function); `return`, `break` and `continue` anywhere,
+that path, since the macro treats a bare lowercase call as another `#[handwired]` function); `return`, `?`, `break` and `continue` anywhere,
 including under conditions that depend on the inputs.
 
 **Early exits:** the trace runs every path, so an exit can't leave it. A function that returns early gets a `done` bit
@@ -254,7 +254,13 @@ two give an unspecified value for `None`, where Rust panics). The derive adds `A
 Constructors name the variant by its enum, `Action::Attack(d)` or `Action::Move { dx, dy: 0 }`, since the macro can't
 tell which enum a bare `Attack(d)` after `use Action::*` belongs to (bare unit variants work, as in patterns). `Some(x)`
 takes its type from where it goes (an annotated `let`, a result, an assigned variable, a field), else from `x`, so a literal may
-need a suffix, `Some(3u8)`, and `let mut x = None` needs an annotation. `Result` isn't supported yet.
+need a suffix, `Some(3u8)`, and `let mut x = None` needs an annotation.
+
+`Result<T, E>` works the same way: a bit for whether it's `Err`, then the `Ok` value's cells and the error's. `Ok(..)`
+and `Err(..)` take their type from where they go like `Some`, and results have `is_ok`, `is_err`, `ok`, `err`,
+`unwrap_or`, `unwrap`, `expect`, `unwrap_err` and `expect_err`. `?` works on a `Result` in a function that returns a
+`Result`, and on an `Option` in one that returns an `Option`; it leaves early like `return`, and the error type must be
+the function's own (there's no `From` conversion).
 
 ### Bitwise operators
 
@@ -470,8 +476,8 @@ returns without panicking. Overflow and out-of-bounds indexing panic in Rust, so
 unspecified. `verify()` samples inputs (plus each range's ends); it is a test, not a proof.
 
 **The `#[handwired]` subset.**
-- Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value, `Result`,
-  generic structs and enums (other than `Option`), closures, references, generic functions, `let` chains
+- Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value,
+  generic structs and enums (other than `Option` and `Result`), closures, references, generic functions, `let` chains
   (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and

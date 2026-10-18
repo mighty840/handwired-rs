@@ -717,6 +717,34 @@ impl Rewriter {
                 let lowered: ExprMatch = parse_quote!(match #scrutinee { #pattern #guard => true, _ => false });
                 self.match_expr(&lowered, value, expected)
             }
+            Expr::Try(try_expr) => {
+                // `x?` leaves the function early, like the `match` Rust expands it to, with the same error type
+                // (no `From` conversion).
+                let inner = &try_expr.expr;
+                let returned = match &self.return_type {
+                    Type::Path(path) if path.qself.is_none() => {
+                        path.path.segments.last().map(|last| last.ident.to_string()).unwrap_or_default()
+                    }
+                    _ => String::new(),
+                };
+                let lowered: Expr = match returned.as_str() {
+                    "Option" => parse_quote!(match #inner {
+                        Some(__hw_value) => __hw_value,
+                        None => return None,
+                    }),
+                    "Result" => parse_quote!(match #inner {
+                        Ok(__hw_value) => __hw_value,
+                        Err(__hw_error) => return Err(__hw_error),
+                    }),
+                    _ => {
+                        return self.error(
+                            span,
+                            "`?` needs the #[handwired] function to return an `Option` or a `Result`, written out",
+                        );
+                    }
+                };
+                self.expr(&lowered, value, expected)
+            }
             Expr::Macro(_) => self.error(span, "macros aren't supported inside #[handwired] functions"),
             Expr::Let(_) => {
                 self.error(span, "`let` is only supported directly in an `if let` in #[handwired] functions")
@@ -1359,6 +1387,10 @@ fn exits(stmts: &[Stmt]) -> Exits {
         fn visit_expr_return(&mut self, expr: &'ast syn::ExprReturn) {
             self.exits.returns = true;
             syn::visit::visit_expr_return(self, expr);
+        }
+        fn visit_expr_try(&mut self, expr: &'ast syn::ExprTry) {
+            self.exits.returns = true;
+            syn::visit::visit_expr_try(self, expr);
         }
         fn visit_expr_break(&mut self, expr: &'ast syn::ExprBreak) {
             self.exits.labeled |= expr.label.is_some();
