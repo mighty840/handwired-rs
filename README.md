@@ -253,7 +253,7 @@ comparisons aren't supported. `Option` values have `is_some`, `is_none`, `unwrap
 two give an unspecified value for `None`, where Rust panics). The derive adds `ActionHw`, the circuit form.
 Constructors name the variant by its enum, `Action::Attack(d)` or `Action::Move { dx, dy: 0 }`, since the macro can't
 tell which enum a bare `Attack(d)` after `use Action::*` belongs to (bare unit variants work, as in patterns). `Some(x)`
-takes its type from where it goes (an annotated `let`, a result, an assigned variable), else from `x`, so a literal may
+takes its type from where it goes (an annotated `let`, a result, an assigned variable, a field), else from `x`, so a literal may
 need a suffix, `Some(3u8)`, and `let mut x = None` needs an annotation. `Result` isn't supported yet.
 
 ### Bitwise operators
@@ -473,8 +473,6 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
 - Not supported: `while`/`loop` without `#[max_iterations(N)]`, labeled loops, `break` with a value, `Result`,
   generic structs and enums (other than `Option`), closures, references, generic functions, `let` chains
   (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
-- An `if` whose branches are integer literals inside a struct or variant literal, e.g.
-  `Action::Attack(if strong { 6 } else { 3 })`, makes an `i32`; give a literal a suffix (`6u8`).
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates and
   `wrapping_*` go beyond as bytes. Divisors that may exceed 2^23 in magnitude, `saturating_*` on a wide value, and

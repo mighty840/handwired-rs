@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A field of a struct or variant literal takes its type from the field, so plain integer literals in an `if`,
+  `match`, block, tuple or array there work: `Action::Attack(if strong { 6 } else { 3 })` no longer makes an `i32`.
+  Circuits that compiled before are unchanged. `dsl` gains `choose`.
 - `Option<T>` and `#[derive(HwType)]` enums whose variants carry data, as parameters, results, locals, struct fields
   and array elements: one cell for the variant, then every variant's fields, which hold 0 where the value is another
   variant (their declared ranges take in 0). Constructors (`Action::Attack(d)`, `Action::Move { dx, dy }`,

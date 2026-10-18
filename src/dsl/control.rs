@@ -377,6 +377,25 @@ pub fn if_else<C: IfElse<A, B>, A, B>(condition: C, then: impl FnOnce() -> A, ot
     condition.if_else(then, otherwise)
 }
 
+/// An `if` whose branches both make the type of where its value goes, e.g. a struct field: an `if` of plain literals
+/// there takes the field's type rather than `i32`.
+pub fn choose<C: Cond, R: Mux>(condition: C, then: impl FnOnce() -> R, otherwise: impl FnOnce() -> R) -> R {
+    match condition.branch() {
+        Branch::Static(flag) => {
+            if flag {
+                then()
+            } else {
+                otherwise()
+            }
+        }
+        Branch::Dynamic(bit) => {
+            let on = then();
+            let off = otherwise();
+            Mux::select(bit, off, on)
+        }
+    }
+}
+
 // ---- Indexing ---------------------------------------------------------------------------------------------------------
 
 /// `items[index]`: native for a native index, a table read for a circuit index.

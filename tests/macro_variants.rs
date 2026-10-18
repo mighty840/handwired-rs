@@ -157,7 +157,7 @@ pub fn choose(#[range(0, 50)] hp: u8, #[range(-3, 3)] dx: i8, enemy_near: bool) 
     if hp < 10 {
         Action::Heal(10, hp < 3)
     } else if enemy_near {
-        Action::Attack(if hp > 30 { 6u8 } else { 3 })
+        Action::Attack(if hp > 30 { 6 } else { 3 })
     } else if dx != 0 {
         Action::Move { dx: dx.clamp(-1, 1), dy: 0 }
     } else {
@@ -279,4 +279,61 @@ fn while_let_runs_over_options() {
     assert_eq!(compiled.verify(2_000).unwrap().skipped, 0);
     assert_eq!(compiled.eval(&(Some(255),)).unwrap(), 4);
     assert_eq!(compiled.eval(&(None,)).unwrap(), 0);
+}
+
+/// A spot on the board with its marks and an optional bonus.
+#[derive(Clone, Copy, Debug, PartialEq, HwType)]
+pub struct Spot {
+    /// Column and row.
+    pub at: (i8, i8),
+    /// Two marks.
+    pub marks: [u8; 2],
+    /// A bonus, if any.
+    pub bonus: Option<u8>,
+    /// Health.
+    #[range(0, 50)]
+    pub hp: u8,
+}
+
+/// Plain integer literals in `if`s, `match`es, blocks, tuples and arrays inside struct and variant literals take the
+/// field's type.
+#[handwired]
+pub fn place(#[range(0, 3)] kind: u8, near: bool) -> (Spot, Action, Option<u8>, u8) {
+    let mut steps = 0u8;
+    let size = 2;
+    let spot = Spot {
+        at: (if near { 1 } else { -1 }, if size > 1 { 2 } else { 3 }),
+        marks: [
+            match kind {
+                0 => 7,
+                1 => 8,
+                _ => 9,
+            },
+            if kind > 1 { 200 } else { 100 },
+        ],
+        bonus: Some(if near {
+            steps += 1;
+            5
+        } else {
+            6
+        }),
+        hp: {
+            let base = 10u8;
+            if kind == 3 { base * 2 } else { 40 }
+        },
+    };
+    let action = Action::Move { dx: if near { 1 } else { 0 }, dy: if kind == 0 { -1 } else { 1 } };
+    let extra: Option<u8> = Some(if kind == 2 { 30 } else { 31 });
+    (spot, action, extra, steps)
+}
+
+#[test]
+fn literals_in_fields_take_the_fields_types() {
+    let compiled = place_circuit();
+    assert_eq!(compiled.verify(1_000).unwrap().skipped, 0);
+    for kind in 0..4 {
+        for near in [false, true] {
+            assert_eq!(compiled.eval(&(kind, near)).unwrap(), place(kind, near));
+        }
+    }
 }

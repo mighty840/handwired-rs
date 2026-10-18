@@ -290,6 +290,7 @@ impl Rewriter {
 
     fn placeholder(expected: Option<&Type>) -> Tokens {
         match expected {
+            Some(Type::Infer(_)) => quote!(::handwired_rs::dsl::placeholder()),
             Some(ty) => quote!(::handwired_rs::dsl::placeholder::<<#ty as ::handwired_rs::dsl::HwType>::Val>()),
             None => quote!(::handwired_rs::dsl::placeholder()),
         }
@@ -303,6 +304,19 @@ impl Rewriter {
     fn fresh(&mut self, base: &str) -> Ident {
         self.counter += 1;
         format_ident!("__{}{}", base, self.counter)
+    }
+
+    /// `expr` rewritten as a value whose circuit form is `expected`'s. Where `expected` is `_`, e.g. for a struct
+    /// field, whose type the macro can't name, rustc infers it from where the value goes; an `if`, `match`, block,
+    /// tuple or array then converts each of its parts, since converting what they make again would leave its type
+    /// open.
+    fn converted(&mut self, expr: &Expr, expected: Option<&Type>) -> Tokens {
+        let rewritten = self.expr(expr, true, expected);
+        if is_inferred(expected) && converts_parts(expr) {
+            rewritten
+        } else {
+            wrap_expected(rewritten, expected, expr.span())
+        }
     }
 
     /// The type an expression is known to have, for a plain variable.
@@ -354,8 +368,7 @@ impl Rewriter {
                     quote!(#rewritten; #placeholder)
                 }
                 Stmt::Expr(expr, None) if is_tail && value => {
-                    let rewritten = self.expr(expr, true, expected);
-                    let rewritten = wrap_expected(rewritten, expected, expr.span());
+                    let rewritten = self.converted(expr, expected);
                     if lift && expected.is_none() {
                         quote_spanned!(expr.span()=> ::handwired_rs::dsl::Lift::lift(#rewritten))
                     } else {
@@ -456,16 +469,14 @@ impl Rewriter {
                     Some(Type::Tuple(types)) if types.elems.len() == tuple.elems.len() => {
                         types.elems.iter().cloned().map(Some).collect()
                     }
+                    Some(Type::Infer(_)) => vec![Some(inferred()); tuple.elems.len()],
                     _ => vec![None; tuple.elems.len()],
                 };
                 let elements: Vec<Tokens> = tuple
                     .elems
                     .iter()
                     .zip(&element_types)
-                    .map(|(element, ty)| {
-                        let rewritten = self.expr(element, true, ty.as_ref());
-                        wrap_expected(rewritten, ty.as_ref(), element.span())
-                    })
+                    .map(|(element, ty)| self.converted(element, ty.as_ref()))
                     .collect();
                 if elements.len() == 1 {
                     let element = &elements[0];
@@ -477,25 +488,20 @@ impl Rewriter {
             Expr::Array(array) => {
                 let element_type = match expected {
                     Some(Type::Array(types)) => Some((*types.elem).clone()),
+                    Some(Type::Infer(_)) => Some(inferred()),
                     _ => None,
                 };
-                let elements: Vec<Tokens> = array
-                    .elems
-                    .iter()
-                    .map(|element| {
-                        let rewritten = self.expr(element, true, element_type.as_ref());
-                        wrap_expected(rewritten, element_type.as_ref(), element.span())
-                    })
-                    .collect();
+                let elements: Vec<Tokens> =
+                    array.elems.iter().map(|element| self.converted(element, element_type.as_ref())).collect();
                 quote_spanned!(span=> [#(#elements),*])
             }
             Expr::Repeat(repeat) => {
                 let element_type = match expected {
                     Some(Type::Array(types)) => Some((*types.elem).clone()),
+                    Some(Type::Infer(_)) => Some(inferred()),
                     _ => None,
                 };
-                let element = self.expr(&repeat.expr, true, element_type.as_ref());
-                let element = wrap_expected(element, element_type.as_ref(), repeat.expr.span());
+                let element = self.converted(&repeat.expr, element_type.as_ref());
                 let length = &repeat.len;
                 quote_spanned!(span=> [#element; #length])
             }
@@ -549,7 +555,9 @@ impl Rewriter {
                 quote_spanned!(span=> #receiver.#method #turbofish(#(#args),*))
             }
             Expr::Call(call) => {
-                let args: Vec<Tokens> = call.args.iter().map(|arg| self.expr(arg, true, None)).collect();
+                let lowercase_call = |rewriter: &mut Rewriter| -> Vec<Tokens> {
+                    call.args.iter().map(|arg| rewriter.expr(arg, true, None)).collect()
+                };
                 match &*call.func {
                     // `Shape::Rect(w, h)` or `Some(x)`: a variant with its fields.
                     Expr::Path(path)
@@ -558,8 +566,9 @@ impl Rewriter {
                                 last.ident.to_string().starts_with(|first: char| first.is_ascii_uppercase())
                             }) =>
                     {
-                        let fields: Vec<(syn::Member, Tokens)> = args
-                            .into_iter()
+                        let fields: Vec<(syn::Member, &Expr)> = call
+                            .args
+                            .iter()
                             .enumerate()
                             .map(|(index, arg)| (syn::Member::Unnamed(syn::Index::from(index)), arg))
                             .collect();
@@ -572,10 +581,12 @@ impl Rewriter {
                                 ident.to_string().starts_with(|first: char| first.is_ascii_lowercase() || first == '_')
                             }) =>
                     {
+                        let args = lowercase_call(self);
                         let hw_name = format_ident!("{}_hw", path.path.get_ident().unwrap());
                         quote_spanned!(span=> #hw_name(#(::handwired_rs::dsl::Conv::conv(#args)),*))
                     }
                     func => {
+                        let args = lowercase_call(self);
                         let func = self.expr(func, true, None);
                         quote_spanned!(span=> #func(#(#args),*))
                     }
@@ -727,11 +738,8 @@ impl Rewriter {
                         return self
                             .error(span, "`..` isn't supported in a variant's fields in #[handwired] functions");
                     }
-                    let fields: Vec<(syn::Member, Tokens)> = structure
-                        .fields
-                        .iter()
-                        .map(|field| (field.member.clone(), self.expr(&field.expr, true, None)))
-                        .collect();
+                    let fields: Vec<(syn::Member, &Expr)> =
+                        structure.fields.iter().map(|field| (field.member.clone(), &field.expr)).collect();
                     return self.variant(&structure.path, fields, expected, span);
                 }
                 let mut path = structure.path.clone();
@@ -742,8 +750,8 @@ impl Rewriter {
                     .iter()
                     .map(|field| {
                         let member = &field.member;
-                        let value = self.expr(&field.expr, true, None);
-                        quote_spanned!(field.span()=> #member: ::handwired_rs::dsl::Conv::conv(#value))
+                        let value = self.converted(&field.expr, Some(&inferred()));
+                        quote_spanned!(field.span()=> #member: #value)
                     })
                     .collect();
                 let rest = structure.rest.as_ref().map(|rest| {
@@ -756,55 +764,71 @@ impl Rewriter {
         }
     }
 
-    /// A variant of an enum that carries data, from its path and its rewritten fields: the circuit form's value with
-    /// the variant's tag, each field set, and the other variants' fields 0. `Some(x)` takes its type from where it
-    /// goes when that's known, else from `x`.
+    /// A variant of an enum that carries data, from its path and its fields: the circuit form's value with the
+    /// variant's tag, each field set, and the other variants' fields 0. Each field's type comes from the enum, so an
+    /// `if` of plain literals there takes it too. `Some`, `Ok` and `Err` take their type from where the value goes when
+    /// that's known, else from the value.
     fn variant(
         &mut self,
         path: &syn::Path,
-        fields: Vec<(syn::Member, Tokens)>,
+        fields: Vec<(syn::Member, &Expr)>,
         expected: Option<&Type>,
         span: Span,
     ) -> Tokens {
         let last = path.segments.last().unwrap();
         let variant = &last.ident;
-        let enum_path = match variant.to_string().as_str() {
-            "Some" => match expected {
-                Some(ty) => quote!(#ty),
-                None if fields.len() == 1 => {
-                    let value = &fields[0].1;
-                    return quote_spanned!(span=> ::handwired_rs::dsl::some(::handwired_rs::dsl::Lift::lift(#value)));
+        let name = variant.to_string();
+        let hw_type = if path.segments.len() == 1 && matches!(name.as_str(), "Some" | "Ok" | "Err") {
+            if fields.len() != 1 {
+                return self.error(span, &format!("`{name}` takes one value"));
+            }
+            match expected {
+                Some(Type::Infer(_)) if name == "Some" => {
+                    // Built whole, as `dsl::some` builds it, without the 0 that `__hw_new_Some` makes first.
+                    let value = self.converted(fields[0].1, Some(&inferred()));
+                    return quote_spanned!(span=> ::handwired_rs::dsl::OptionHw {
+                        __Some__0: #value,
+                        __tag: ::handwired_rs::dsl::Val::constant(true),
+                    });
                 }
-                None => return self.error(span, "`Some` takes one value"),
-            },
-            "Ok" | "Err" => return self.error(span, "`Result` isn't supported in #[handwired] functions yet"),
-            _ if path.segments.len() < 2 => {
-                return self.error(
-                    span,
-                    "name a variant with data by its enum in #[handwired] functions, e.g. `Shape::Rect(w, h)`, or this \
-                     is a tuple struct, which isn't supported",
-                );
+                Some(Type::Infer(_)) => quote!(::handwired_rs::dsl::ResultHw<_, _>),
+                Some(ty) => quote!(<#ty as ::handwired_rs::dsl::HwType>::Val),
+                None => {
+                    // Nothing says the type, so it comes from the value (and for `Ok` and `Err`, the other side's
+                    // type from where the result goes later).
+                    let value = self.expr(fields[0].1, true, None);
+                    let helper = format_ident!("{}", name.to_lowercase());
+                    return quote_spanned!(span=> ::handwired_rs::dsl::#helper(::handwired_rs::dsl::Lift::lift(#value)));
+                }
             }
-            _ => {
-                let mut enum_path = path.clone();
-                enum_path.segments.pop();
-                let enum_path =
-                    enum_path.segments.into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>();
-                let leading = &path.leading_colon;
-                quote!(#leading #enum_path)
-            }
+        } else if path.segments.len() < 2 {
+            return self.error(
+                span,
+                "name a variant with data by its enum in #[handwired] functions, e.g. `Shape::Rect(w, h)`, or this is \
+                 a tuple struct, which isn't supported",
+            );
+        } else {
+            let mut enum_path = path.clone();
+            enum_path.segments.pop();
+            let enum_path = enum_path.segments.into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>();
+            let leading = &path.leading_colon;
+            quote!(<#leading #enum_path as ::handwired_rs::dsl::HwType>::Val)
         };
         let value = self.fresh("variant");
         let new = format_ident!("__hw_new_{}", variant);
-        let assignments = fields.iter().map(|(member, field)| {
-            let name = match member {
-                syn::Member::Named(name) => format_ident!("__{}__{}", variant, name),
-                syn::Member::Unnamed(index) => format_ident!("__{}__{}", variant, index.index),
-            };
-            quote_spanned!(span=> #value.#name = ::handwired_rs::dsl::Conv::conv(#field);)
-        });
+        let assignments: Vec<Tokens> = fields
+            .into_iter()
+            .map(|(member, field)| {
+                let name = match member {
+                    syn::Member::Named(name) => format_ident!("__{}__{}", variant, name),
+                    syn::Member::Unnamed(index) => format_ident!("__{}__{}", variant, index.index),
+                };
+                let field = self.converted(field, Some(&inferred()));
+                quote_spanned!(span=> #value.#name = #field;)
+            })
+            .collect();
         quote_spanned!(span=> {
-            let mut #value = <<#enum_path as ::handwired_rs::dsl::HwType>::Val>::#new();
+            let mut #value = <#hw_type>::#new();
             #(#assignments)*
             #value
         })
@@ -956,8 +980,11 @@ impl Rewriter {
         if value && assigned.is_empty() && !exits_early {
             // Branches that only compute a value: run one for a native condition, both for a circuit one.
             let then = self.block(&if_expr.then_branch, true, expected, false);
-            let otherwise = self.expr(otherwise.unwrap(), true, expected);
-            let otherwise = wrap_expected(otherwise, expected, span);
+            let otherwise = self.converted(otherwise.unwrap(), expected);
+            if is_inferred(expected) {
+                // Both branches make the type the value's destination has.
+                return quote_spanned!(span=> ::handwired_rs::dsl::choose(#condition, || #then, || #otherwise));
+            }
             return quote_spanned!(span=> ::handwired_rs::dsl::if_else(#condition, || #then, || #otherwise));
         }
 
@@ -975,6 +1002,7 @@ impl Rewriter {
         // placeholder of whatever type the other branch has.
         let else_branch = |rewriter: &mut Rewriter| match otherwise {
             Some(Expr::Block(block)) => rewriter.block(&block.block, value, expected, value),
+            Some(otherwise) if value && is_inferred(expected) => rewriter.converted(otherwise, expected),
             Some(otherwise) => {
                 let tokens = rewriter.expr(otherwise, value, expected);
                 wrap_value(tokens)
@@ -1071,8 +1099,30 @@ impl Rewriter {
     }
 }
 
+/// `_`, for a value whose type rustc infers from where it goes.
+fn inferred() -> Type {
+    parse_quote!(_)
+}
+
+fn is_inferred(expected: Option<&Type>) -> bool {
+    matches!(expected, Some(Type::Infer(_)))
+}
+
+/// Whether rewriting `expr` with an expected type converts each of its parts, so that its result already has the
+/// expected type.
+fn converts_parts(expr: &Expr) -> bool {
+    match expr {
+        Expr::If(if_expr) => if_expr.else_branch.is_some(),
+        Expr::Match(_) | Expr::Block(_) | Expr::Tuple(_) | Expr::Array(_) | Expr::Repeat(_) => true,
+        Expr::Paren(inner) => converts_parts(&inner.expr),
+        Expr::Group(inner) => converts_parts(&inner.expr),
+        _ => false,
+    }
+}
+
 fn wrap_expected(tokens: Tokens, expected: Option<&Type>, span: Span) -> Tokens {
     match expected {
+        Some(Type::Infer(_)) => quote_spanned!(span=> ::handwired_rs::dsl::Conv::conv(#tokens)),
         Some(ty) => {
             quote_spanned!(span=> ::handwired_rs::dsl::Conv::<<#ty as ::handwired_rs::dsl::HwType>::Val>::conv(#tokens))
         }
