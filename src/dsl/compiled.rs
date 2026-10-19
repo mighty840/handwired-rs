@@ -10,6 +10,7 @@ use super::{CONTEXT, Kind, Mux, Scalar, Val, is_wide, with_circuit};
 use crate::Error;
 use crate::batch::BatchExecutor;
 use crate::circuit::{BackpropOptions, Circuit};
+use crate::numeric::Range;
 use crate::tensor::{TensorExecutor, TensorProgram};
 use crate::wire::Wire;
 
@@ -27,19 +28,33 @@ pub struct Attrs {
     /// Declare each scalar's range with 0 in it: the cells of an enum variant that isn't the value's variant hold 0.
     /// Sampling ignores it.
     pub holds_zero: bool,
+    /// For the cells of an enum variant's fields, the source cell of the enum's tag and the tag that selects the
+    /// variant: an exported program refuses inputs where the cells aren't 0 while another variant is selected.
+    pub variant: Option<(usize, u32)>,
 }
 
 impl Attrs {
-    pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None, holds_zero: false };
+    pub const NONE: Attrs = Attrs { range: None, grid: None, ranges: None, holds_zero: false, variant: None };
 
     /// What `#[range(lo, hi)]`, `#[grid(step)]` and `#[ranges([...])]` declare.
     pub const fn new(range: Option<(f64, f64)>, grid: Option<f64>, ranges: Option<&'static [(f64, f64)]>) -> Attrs {
-        Attrs { range, grid, ranges, holds_zero: false }
+        Attrs { range, grid, ranges, holds_zero: false, variant: None }
     }
 
     /// These attributes for cells that hold 0 where their variant isn't the value's.
     pub fn holding_zero(&self) -> Attrs {
         Attrs { holds_zero: true, ..*self }
+    }
+
+    /// These attributes for the cells of a variant's fields, selected where source cell `tag` holds `value` and 0
+    /// elsewhere.
+    pub fn in_variant(&self, tag: usize, value: u32) -> Attrs {
+        Attrs { holds_zero: true, variant: Some((tag, value)), ..*self }
+    }
+
+    /// These attributes for cells inside a value declared with `outer`: they keep its variant.
+    pub fn within(&self, outer: &Attrs) -> Attrs {
+        Attrs { holds_zero: outer.holds_zero, variant: outer.variant, ..*self }
     }
 
     /// The attributes of the `cells` scalars starting at `offset` within this value.
@@ -56,7 +71,7 @@ impl Attrs {
         if self.ranges.is_some() {
             self.part(offset, cells)
         } else if own.range.is_some() || own.ranges.is_some() || own.grid.is_some() {
-            Attrs { holds_zero: self.holds_zero, ..*own }
+            own.within(self)
         } else {
             *self
         }
@@ -83,6 +98,13 @@ impl Attrs {
 /// Hands out source cells while a function's parameters are declared.
 pub struct Inputs {
     next: usize,
+}
+
+impl Inputs {
+    /// The source cell the next scalar declared gets, e.g. an enum's tag.
+    pub fn next_cell(&self) -> usize {
+        self.next
+    }
 }
 
 /// A deterministic random source for sampling inputs.
@@ -180,8 +202,32 @@ pub fn declare_scalar<T: Scalar>(inputs: &mut Inputs, attrs: &Attrs) -> Val<T> {
                 }
             }
         }
+        if let Some((tag, value)) = attrs.variant {
+            let (low, high) = declared_range::<T>(attrs);
+            circuit.declare_source_variant(index, tag, value, Range::new(low, high));
+        }
         Val::from_wire(wire)
     })
+}
+
+/// Declare a fieldless enum's cell, which also allows only its discriminants where they aren't every whole number
+/// in its range.
+pub fn declare_enum<T: Scalar>(inputs: &mut Inputs, attrs: &Attrs, discriminants: &[i64]) -> Val<T> {
+    let index = inputs.next;
+    let value = declare_scalar::<T>(inputs, attrs);
+    let (low, high) = declared_range::<T>(attrs);
+    let step = attrs.grid.unwrap_or(1.0).max(1.0);
+    let allowed: Vec<f64> = discriminants
+        .iter()
+        .map(|&discriminant| discriminant as f64)
+        .filter(|value| (low..=high).contains(value))
+        .collect();
+    if (allowed.len() as f64) < ((high - low) / step).floor() + 1.0 {
+        with_circuit(|circuit| {
+            circuit.declare_source_values(index, allowed.iter().map(|&value| value as f32).collect())
+        });
+    }
+    value
 }
 
 fn sample_scalar<T: Scalar>(rng: &mut Rng, attrs: &Attrs) -> T {

@@ -147,37 +147,48 @@ impl Rng {
     }
 }
 
-/// Input records within the declared ranges: each range's ends, then random values on the cell's grid.
+/// Input records the runner accepts: each range's ends, then random values on the cell's grid. A variant's cells
+/// hold 0 where its tag doesn't select it, and an enum with gaps between its discriminants takes one of them.
 fn records(program: &TensorProgram, count: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut rng = Rng(seed | 1);
-    let cells = 0..program.source_size;
-    let mut records = vec![
-        cells.clone().map(|cell| program.ranges[cell].min as f32).collect(),
-        cells.clone().map(|cell| program.ranges[cell].max as f32).collect(),
-    ];
-    for _ in 0..count {
-        records.push(
-            cells
-                .clone()
-                .map(|cell| {
-                    let range = program.ranges[cell];
-                    let value = range.min + rng.unit() * (range.max - range.min);
-                    let value = match program.grids[cell] {
-                        Some(step) => ((value / step).floor() * step).clamp(range.min, range.max),
-                        None => value,
-                    };
-                    let cell_value = value as f32;
-                    let inside = (cell_value as f64) >= range.min && (cell_value as f64) <= range.max;
-                    if inside {
-                        cell_value
-                    } else {
-                        range.min as f32
+    (0..count + 2)
+        .map(|round| {
+            let mut record: Vec<f32> = Vec::new();
+            let mut selected = Vec::new();
+            for rule in &program.source_rules[..program.source_size] {
+                let cell = record.len();
+                let (on, range) = match rule.variant {
+                    Some((tag, variant, range)) => (selected[tag] && record[tag] == variant as f32, range),
+                    None => (true, program.ranges[cell]),
+                };
+                let value = match (&rule.values, round) {
+                    _ if !on => 0.0,
+                    (Some(values), 0) => values[0],
+                    (Some(values), 1) => values[values.len() - 1],
+                    (Some(values), _) => values[(rng.unit() * values.len() as f64) as usize],
+                    (None, 0) => range.min as f32,
+                    (None, 1) => range.max as f32,
+                    (None, _) => {
+                        let value = range.min + rng.unit() * (range.max - range.min);
+                        let value = match program.grids[cell] {
+                            Some(step) => ((value / step).floor() * step).clamp(range.min, range.max),
+                            None => value,
+                        };
+                        // Within the range as an f32 too.
+                        let cell_value = value as f32;
+                        if (cell_value as f64) < range.min || (cell_value as f64) > range.max {
+                            range.min as f32
+                        } else {
+                            cell_value
+                        }
                     }
-                })
-                .collect(),
-        );
-    }
-    records
+                };
+                selected.push(on);
+                record.push(value);
+            }
+            record
+        })
+        .collect()
 }
 
 fn padded(out: &mut Vec<u8>, bytes: &[u8]) {

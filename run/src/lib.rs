@@ -7,8 +7,9 @@
 //! Every run does the same operations in the same order whatever the inputs, so its time is bounded by the program:
 //! it doesn't vary at all where each f32 operation takes fixed time, as on hardware FPUs, and only by how long each
 //! operation takes where that depends on the values, as in software floating point. Inputs outside the ranges the
-//! function declared, or between the steps of their grids (e.g. 0.5 for an integer), are refused, since the circuit
-//! is only exact on them.
+//! function declared, between the steps of their grids (e.g. 0.5 for an integer), or that aren't an encoding of a
+//! value of their type (an enum variant's cells set while another variant is selected, a number that isn't one of
+//! an enum's discriminants) are refused, since the circuit is only exact on the function's values.
 //!
 //! ```
 //! # fn demo(bytes: &[u8]) -> Result<(), handwired_rs_run::Error> {
@@ -35,8 +36,9 @@ use core::fmt;
 
 /// The first 8 bytes of every program.
 pub const MAGIC: [u8; 8] = *b"HWCIRC\0\0";
-/// The format version this crate reads, and the newest: version 1, which carries no grids, is read too.
-pub const FORMAT_VERSION: u32 = 2;
+/// The format version this crate reads, and the newest: versions 1, which carries no grids, and 2, which carries no
+/// enum variants, are read too.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Why a program can't be read or run.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,6 +78,24 @@ pub enum Error {
         /// The step its values are multiples of.
         step: f64,
     },
+    /// An input cell of an enum variant's fields isn't 0 where its variant isn't selected.
+    InputOutsideVariant {
+        /// Which cell.
+        index: usize,
+        /// Its value.
+        value: f32,
+        /// The cell of the enum's tag that doesn't select the variant.
+        tag: usize,
+        /// The tag that would.
+        variant: u32,
+    },
+    /// An input cell isn't one of the values its function declared, e.g. a number between an enum's discriminants.
+    InputNotAllowed {
+        /// Which cell.
+        index: usize,
+        /// Its value.
+        value: f32,
+    },
     /// The scratch memory is smaller than [`Program::scratch_len`].
     ScratchTooSmall {
         /// The cells needed.
@@ -108,6 +128,15 @@ impl fmt::Display for Error {
             }
             Error::InputOffGrid { index, value, step } => {
                 write!(f, "input cell {index} is {value}, not a multiple of {step}, the step its function declared")
+            }
+            Error::InputOutsideVariant { index, value, tag, variant } => {
+                write!(
+                    f,
+                    "input cell {index} is {value}, but it must be 0 unless input cell {tag} is {variant}, its variant"
+                )
+            }
+            Error::InputNotAllowed { index, value } => {
+                write!(f, "input cell {index} is {value}, not one of the values its function declared")
             }
             Error::ScratchTooSmall { needed, actual } => {
                 write!(f, "{actual} scratch cells; the program needs {needed}")
@@ -328,8 +357,10 @@ pub struct Program<'a> {
     root_count: usize,
     layer_count: usize,
     sources: usize,
-    /// Bytes per source cell: its range, and in version 2 its grid.
+    /// Bytes per source cell: its range, from version 2 its grid, and from version 3 its variant.
     source_bytes: usize,
+    /// Where the value sets start, and how many there are.
+    value_sets: (usize, usize),
     roots: usize,
     layers: usize,
     max_rows: usize,
@@ -347,10 +378,14 @@ impl<'a> Program<'a> {
         }
         let mut reader = Reader { bytes, at: MAGIC.len() };
         let version = reader.u32()?;
-        if version != 1 && version != FORMAT_VERSION {
+        if !(1..=FORMAT_VERSION).contains(&version) {
             return Err(Error::UnsupportedVersion(version));
         }
-        let source_bytes = if version == 1 { 16 } else { 24 };
+        let source_bytes = match version {
+            1 => 16,
+            2 => 24,
+            _ => 32,
+        };
         let Some(body_length) = bytes.len().checked_sub(4).filter(|&length| length >= reader.at) else {
             return Err(Error::Truncated);
         };
@@ -366,14 +401,33 @@ impl<'a> Program<'a> {
         let gather_slots = reader.count()?;
         let root_count = reader.count()?;
         let layer_count = reader.count()?;
+        let value_set_count = if version >= 3 { reader.count()? } else { 0 };
         let sources = reader.words(source_size.checked_mul(source_bytes / 4).ok_or(Error::Truncated)?)?;
-        if source_bytes == 24 {
-            for index in 0..source_size {
-                let step = f64_at(bytes, sources + 24 * index + 16);
+        for index in 0..source_size {
+            let at = sources + source_bytes * index;
+            if source_bytes >= 24 {
+                let step = f64_at(bytes, at + 16);
                 if step != 0.0 && grid_exponent(step).is_none() {
                     return Err(Error::Malformed("a grid step isn't 0 or a power of two from 2^-149 to 2^127"));
                 }
             }
+            if source_bytes >= 32 {
+                let (tag, variant) = (word(bytes, at + 24), word(bytes, at + 28));
+                if tag != u32::MAX && (tag as usize >= index || variant > 1 << 24) {
+                    return Err(Error::Malformed("a variant's tag cell doesn't come before its field, or isn't a tag"));
+                }
+            }
+        }
+        // Sorted by cell, so a run meets them in its pass over the inputs.
+        let value_sets = (reader.at, value_set_count);
+        let mut previous = None;
+        for _ in 0..value_set_count {
+            let (cell, count) = (reader.count()?, reader.count()?);
+            if cell >= source_size || previous.is_some_and(|previous| cell <= previous) || count == 0 {
+                return Err(Error::Malformed("a value set names no cell, or one out of order, or has no values"));
+            }
+            reader.words(count)?;
+            previous = Some(cell);
         }
         let roots = reader.words(root_count)?;
         for index in 0..root_count {
@@ -417,6 +471,7 @@ impl<'a> Program<'a> {
             layer_count,
             sources,
             source_bytes,
+            value_sets,
             roots,
             layers,
             max_rows,
@@ -448,7 +503,8 @@ impl<'a> Program<'a> {
         self.value_count
     }
 
-    /// The range declared for input cell `index`, inclusive.
+    /// The range declared for input cell `index`, inclusive: for a variant's cell, where it's selected (see
+    /// [`Program::input_variant`]).
     pub fn input_range(&self, index: usize) -> Option<(f64, f64)> {
         (index < self.source_size).then(|| {
             let at = self.sources + self.source_bytes * index;
@@ -462,7 +518,35 @@ impl<'a> Program<'a> {
         if index >= self.source_size || self.source_bytes < 24 {
             return None;
         }
-        Some(f64_at(self.bytes, self.sources + 24 * index + 16)).filter(|&step| step != 0.0)
+        Some(f64_at(self.bytes, self.sources + self.source_bytes * index + 16)).filter(|&step| step != 0.0)
+    }
+
+    /// For an input cell of an enum variant's fields, the cell of the enum's tag and the tag that selects the
+    /// variant. The cell is selected where its tag cell holds that and is selected too; elsewhere it must be 0, and
+    /// its range and grid are where it's selected. `None` for other cells, and for every cell of a program before
+    /// version 3, which carries no variants.
+    pub fn input_variant(&self, index: usize) -> Option<(usize, u32)> {
+        if index >= self.source_size || self.source_bytes < 32 {
+            return None;
+        }
+        let at = self.sources + 32 * index + 24;
+        let tag = word(self.bytes, at);
+        (tag != u32::MAX).then(|| (tag as usize, word(self.bytes, at + 4)))
+    }
+
+    /// The values input cell `index` may hold where it's selected, for a fieldless enum with gaps between its
+    /// discriminants; `None` where any value in its range and on its grid is allowed.
+    pub fn input_values(&self, index: usize) -> Option<impl Iterator<Item = f32> + 'a> {
+        let bytes = self.bytes;
+        let mut at = self.value_sets.0;
+        for _ in 0..self.value_sets.1 {
+            let (cell, count) = (word(bytes, at) as usize, word(bytes, at + 4) as usize);
+            if cell == index {
+                return Some((0..count).map(move |value| float_at(bytes, at + 8, value)));
+            }
+            at += 8 + 4 * count;
+        }
+        None
     }
 
     /// The f32 cells of scratch memory [`Program::run`] needs.
@@ -472,7 +556,8 @@ impl<'a> Program<'a> {
 
     /// Evaluate the program on `inputs`, writing its outputs. `scratch` holds at least [`Program::scratch_len`]
     /// cells; afterwards its first [`Program::value_count`] cells hold every value the run computed, in program
-    /// order. Inputs outside their declared ranges or off their grids are refused.
+    /// order. Inputs outside their declared ranges, off their grids, or not an encoding of their type's values are
+    /// refused.
     pub fn run(&self, inputs: &[f32], scratch: &mut [f32], outputs: &mut [f32]) -> Result<(), Error> {
         if inputs.len() != self.source_size {
             return Err(Error::InputLength { expected: self.source_size, actual: inputs.len() });
@@ -483,22 +568,45 @@ impl<'a> Program<'a> {
         if outputs.len() != self.root_count {
             return Err(Error::OutputLength { expected: self.root_count, actual: outputs.len() });
         }
+        let bytes = self.bytes;
+        let (values, rest) = scratch.split_at_mut(self.value_count);
+        // Every test runs on every cell, so an accepted input's time doesn't depend on which variants it selects.
+        // Until the inputs are copied in, `values` holds whether each input cell is selected, 1 or 0: a cell's tag
+        // comes before it.
+        let (mut sets, mut sets_left) = self.value_sets;
         for (index, &value) in inputs.iter().enumerate() {
+            let selected = match self.input_variant(index) {
+                Some((tag, variant)) => (inputs[tag] == variant as f32) & (values[tag] != 0.0),
+                None => true,
+            };
+            values[index] = selected as u32 as f32;
             // The same test as `value as f64` within the f64 bounds, but on f32: the bounds' conversion depends only
             // on the program, so the time doesn't depend on the inputs on chips whose FPU lacks f64.
             let (low, high) = self.input_range(index).unwrap_or((f64::NAN, f64::NAN));
-            if !(value >= f32_at_least(low) && value <= f32_at_most(high)) {
-                return Err(Error::InputOutOfRange { index, value });
+            let in_range = (value >= f32_at_least(low)) & (value <= f32_at_most(high));
+            // parse checked that every step has an exponent.
+            let step = self.input_grid(index);
+            let on_its_grid = step.map_or(true, |step| on_grid(value, grid_exponent(step).unwrap_or(0)));
+            let mut allowed = true;
+            if sets_left > 0 && word(bytes, sets) as usize == index {
+                let count = word(bytes, sets + 4) as usize;
+                allowed = (0..count).fold(false, |found, at| found | (value == float_at(bytes, sets + 8, at)));
+                sets += 8 + 4 * count;
+                sets_left -= 1;
             }
-            if let Some(step) = self.input_grid(index) {
-                // parse checked that every step has an exponent.
-                if !on_grid(value, grid_exponent(step).unwrap_or(0)) {
-                    return Err(Error::InputOffGrid { index, value, step });
-                }
+            // Where it isn't selected, 0 (or -0, which every operation treats alike).
+            if !((selected & in_range & on_its_grid & allowed) | (!selected & (value == 0.0))) {
+                return Err(if !selected {
+                    self.unselected(inputs, index, value)
+                } else if !in_range {
+                    Error::InputOutOfRange { index, value }
+                } else if let (false, Some(step)) = (on_its_grid, step) {
+                    Error::InputOffGrid { index, value, step }
+                } else {
+                    Error::InputNotAllowed { index, value }
+                });
             }
         }
-        let bytes = self.bytes;
-        let (values, rest) = scratch.split_at_mut(self.value_count);
         let (projection, rest) = rest.split_at_mut(self.max_rows);
         let (gather_indices, rest) = rest.split_at_mut(self.gather_slots);
         let gather_masses = &mut rest[..self.gather_slots];
@@ -577,6 +685,19 @@ impl<'a> Program<'a> {
             *output = values[word_at(bytes, self.roots, index) as usize];
         }
         Ok(())
+    }
+
+    /// The refusal of input cell `index`, set while its variant isn't selected: the nearest enum tag up its chain
+    /// that doesn't hold its variant.
+    fn unselected(&self, inputs: &[f32], index: usize, value: f32) -> Error {
+        let (mut tag, mut variant) = self.input_variant(index).unwrap_or((index, 0));
+        while inputs[tag] == variant as f32 {
+            match self.input_variant(tag) {
+                Some(next) => (tag, variant) = next,
+                None => break,
+            }
+        }
+        Error::InputOutsideVariant { index, value, tag, variant }
     }
 
     /// [`Program::run`] with scratch and outputs of its own.

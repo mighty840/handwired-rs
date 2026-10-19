@@ -60,10 +60,17 @@ fn describe(program: &Program) {
     );
     for index in 0..program.input_count() {
         if let Some((low, high)) = program.input_range(index) {
-            match program.input_grid(index) {
-                Some(step) => println!("input {index}: {low}..={high} in steps of {step}"),
-                None => println!("input {index}: {low}..={high}"),
+            let mut line = format!("input {index}: {low}..={high}");
+            if let Some(step) = program.input_grid(index) {
+                line += &format!(" in steps of {step}");
             }
+            if let Some(values) = program.input_values(index) {
+                line += &format!(", one of {}", values.map(|value| value.to_string()).collect::<Vec<_>>().join(", "));
+            }
+            if let Some((tag, variant)) = program.input_variant(index) {
+                line += &format!(", where input {tag} is {variant}; else 0");
+            }
+            println!("{line}");
         }
     }
 }

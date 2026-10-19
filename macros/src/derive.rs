@@ -308,7 +308,7 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<Tokens>
                 type Val = #dsl::Val<#name>;
                 const CELLS: usize = 1;
                 fn declare(inputs: &mut #dsl::Inputs, attrs: &#dsl::Attrs) -> #dsl::Val<#name> {
-                    #dsl::declare_scalar::<#name>(inputs, attrs)
+                    #dsl::declare_enum::<#name>(inputs, attrs, &DISCRIMINANTS)
                 }
                 fn encode(&self, out: &mut Vec<f32>) {
                     out.push(#dsl::Scalar::to_f64(*self) as f32);
@@ -468,6 +468,11 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
         .collect();
 
     let tags: Vec<u8> = (0..variants.len()).map(|index| index as u8).collect();
+    let field_tags: Vec<u32> = variants
+        .iter()
+        .enumerate()
+        .flat_map(|(tag, variant)| variant.fields.clone().map(move |_| tag as u32))
+        .collect();
     let variant_count = variants.len();
     let binds: Vec<&Tokens> = variants.iter().map(|variant| &variant.bind).collect();
     let mut encode_fields = Vec::new();
@@ -592,6 +597,8 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
         const _: () = {
             const FIELD_ATTRS: [#dsl::Attrs; #count] = [#(#attrs),*];
             const TAGS: [u8; #variant_count] = [#(#tags),*];
+            /// Each field's variant's tag.
+            const FIELD_TAGS: [u32; #count] = [#(#field_tags),*];
 
             /// The tag's attributes: its entry of the parameter's `ranges` when given, else every variant.
             fn tag_attrs(attrs: &#dsl::Attrs) -> #dsl::Attrs {
@@ -607,13 +614,15 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                 const CELLS: usize = 1 #(+ <#types as #dsl::HwType>::CELLS)*;
                 fn declare(inputs: &mut #dsl::Inputs, attrs: &#dsl::Attrs) -> #hw_name {
                     attrs.expect_cells(<Self as #dsl::HwType>::CELLS);
-                    let tag = tag_attrs(attrs);
+                    let tag_cell = inputs.next_cell();
                     #hw_name {
-                        __tag: #dsl::declare_scalar::<u8>(inputs, &if attrs.holds_zero { tag.holding_zero() } else { tag }),
+                        __tag: #dsl::declare_scalar::<u8>(inputs, &tag_attrs(attrs).within(attrs)),
                         #(
                             #hw_fields: {
                                 let cells = <#types as #dsl::HwType>::CELLS;
-                                let field = attrs.field(&FIELD_ATTRS[#field_indices], #offsets, cells).holding_zero();
+                                let field = attrs
+                                    .field(&FIELD_ATTRS[#field_indices], #offsets, cells)
+                                    .in_variant(tag_cell, FIELD_TAGS[#field_indices]);
                                 <#types as #dsl::HwType>::declare(inputs, &field)
                             },
                         )*

@@ -2,12 +2,23 @@
 
 ## Unreleased
 
-- Program format version 2 carries each input cell's grid, and handwired-rs-run refuses inputs between its steps,
-  e.g. 0.5 for an integer, a `bool` or an enum's variant, with `Error::InputOffGrid`. Such inputs used to run and give
-  results the function never could (a vending machine's state tag of 0.5 gave a credit of 75), since a circuit is
-  only exact on its grids. The check reads the value's bits, so its time doesn't depend on the value.
-  `Program::input_grid` gives each cell's step, and `handwired-run --info` prints it. Version 1 programs still run,
-  checked against their ranges only. `TensorProgram::to_bytes` and `Compiled::export` write version 2.
+- Program format version 3 carries what an input must be beyond its range, and handwired-rs-run refuses inputs that
+  aren't an encoding of a value the function takes. Such inputs used to run and give results the function never could
+  (a vending machine's state tag of 0.5 gave a credit of 75), since a circuit is only exact on its function's values.
+  - Each input cell's grid: values between its steps, e.g. 0.5 for an integer, a `bool` or an enum's variant, are
+    refused with `Error::InputOffGrid`. The check reads the value's bits, so its time doesn't depend on the value.
+  - For the cells of an enum variant's fields (enums with data, `Option`, `Result`), the cell of the enum's tag and
+    the tag that selects the variant. A cell that isn't 0 while its variant isn't selected, by its own tag or one
+    further out, is refused with `Error::InputOutsideVariant`, and where it's selected its declared range applies
+    without the 0 it holds elsewhere.
+  - For a fieldless enum with gaps between its discriminants, e.g. `Low = 2, Mid = 5, High = 40`, the values it
+    allows: 3 is refused with `Error::InputNotAllowed`.
+
+  Every check runs on every cell, so an accepted input's time doesn't depend on which variants it selects.
+  `Program::input_grid`, `input_variant` and `input_values` give them, and `handwired-run --info` prints them.
+  Version 1 programs still run, checked against their ranges only, and version 2 programs (written by unreleased
+  builds) against their ranges and grids. `TensorProgram::to_bytes` and `Compiled::export` write version 3, with
+  `TensorProgram::source_rules`, which the circuit records as parameters are declared (`Circuit::source_rules`).
 - handwired-rs-run takes the same time whatever the values, as far as the chip allows:
   - ReLU and table reads use masks instead of branches on the data;
   - table reads and the input range check compare in f32, so FPUs without f64 don't call software routines whose

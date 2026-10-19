@@ -1,16 +1,21 @@
 //! A compiled program as bytes, for the `handwired-rs-run` crate to run without this one: on a microcontroller, in a
 //! Linux image, anywhere with f32 arithmetic.
 //!
-//! The format, version 2, is little-endian throughout:
+//! The format, version 3, is little-endian throughout:
 //!
 //! ```text
 //! magic        8 bytes, "HWCIRC\0\0"
-//! version      u32, 2
+//! version      u32, 3
 //! description  u32 length, then that many bytes of UTF-8
-//! header       u32 source_size, value_count, gather_slot_count, root_count, layer_count
-//! sources      source_size × (f64 min, f64 max, f64 step), each source cell's declared range, and the grid its
-//!              values are whole multiples of: a power of two from 2^-149 to 2^127, or 0 where any value in the
-//!              range is allowed
+//! header       u32 source_size, value_count, gather_slot_count, root_count, layer_count, value_set_count
+//! sources      source_size × (f64 min, f64 max, f64 step, u32 tag, u32 variant), each source cell's declared range,
+//!              the grid its values are whole multiples of: a power of two from 2^-149 to 2^127, or 0 where any
+//!              value in the range is allowed, and for a cell of an enum variant's fields, the cell of the enum's
+//!              tag, before it, and the tag that selects the variant (else tag is 2^32 - 1). A variant's cell is
+//!              selected where its tag cell holds the variant and that cell is selected too; elsewhere it holds 0,
+//!              and its range and grid are where it's selected
+//! value sets   value_set_count × (u32 cell, u32 count, count × f32 values), in increasing cell order: the values a
+//!              selected cell may hold, for a fieldless enum with gaps between its discriminants
 //! roots        root_count × u32, the packed position of each output
 //! layers       layer_count × layer
 //! checksum     u32, FNV-1a over every byte before it
@@ -30,14 +35,15 @@
 //!
 //! Packed positions `0..source_size` are the source cells; each layer appends its `output_size` values after the
 //! ones before it. The checksum catches corrupted storage, not tampering: a program's identity is a hash of its
-//! file, e.g. its SHA-256. Version 1 is the same without the sources' steps.
+//! file, e.g. its SHA-256. Version 2 is the same without the sources' variants and the value sets, version 1 also
+//! without the sources' steps.
 
 use crate::tensor::TensorProgram;
 
 /// The first 8 bytes of every exported program.
 pub const PROGRAM_MAGIC: [u8; 8] = *b"HWCIRC\0\0";
 /// The format version this crate writes.
-pub const PROGRAM_FORMAT_VERSION: u32 = 2;
+pub const PROGRAM_FORMAT_VERSION: u32 = 3;
 
 /// FNV-1a over `bytes`, the format's checksum.
 pub fn program_checksum(bytes: &[u8]) -> u32 {
@@ -66,21 +72,44 @@ impl Writer {
 
 impl TensorProgram {
     /// The program in the format above, with `description` (e.g. the function's name and signature) inside, for
-    /// `handwired-rs-run`. Its sources' declared ranges and grids go with it, and the runner refuses inputs outside
-    /// them or between their steps.
+    /// `handwired-rs-run`. Its sources' declared ranges, grids and [`SourceRule`](crate::SourceRule)s go with it,
+    /// and the runner refuses inputs outside them or between their steps, an enum variant's cells set while another
+    /// variant is selected, and values that aren't an enum's discriminants.
     pub fn to_bytes(&self, description: &str) -> Vec<u8> {
         let mut out = Writer(Vec::new());
         out.0.extend_from_slice(&PROGRAM_MAGIC);
         out.u32(PROGRAM_FORMAT_VERSION);
         out.count(description.len());
         out.0.extend_from_slice(description.as_bytes());
-        for count in [self.source_size, self.value_count, self.gather_slot_count, self.roots.len(), self.layers.len()] {
+        let rules = &self.source_rules[..self.source_size];
+        let value_sets = rules.iter().filter(|rule| rule.values.is_some()).count();
+        for count in [
+            self.source_size,
+            self.value_count,
+            self.gather_slot_count,
+            self.roots.len(),
+            self.layers.len(),
+            value_sets,
+        ] {
             out.count(count);
         }
-        for (range, grid) in self.ranges[..self.source_size].iter().zip(&self.grids) {
+        for ((range, grid), rule) in self.ranges[..self.source_size].iter().zip(&self.grids).zip(rules) {
+            let (tag, variant, range) = match rule.variant {
+                Some((tag, variant, selected)) => (tag, variant, selected),
+                None => (u32::MAX as usize, 0, *range),
+            };
             out.f64(range.min);
             out.f64(range.max);
             out.f64(grid.unwrap_or(0.0));
+            out.count(tag);
+            out.u32(variant);
+        }
+        for (cell, rule) in rules.iter().enumerate() {
+            if let Some(values) = &rule.values {
+                out.count(cell);
+                out.count(values.len());
+                out.f32s(values);
+            }
         }
         for root in &self.roots {
             let position = self.wire_order.iter().position(|wire| wire == root).expect("a root was removed");

@@ -130,9 +130,10 @@ impl<T: HwType, E: HwType> HwType for Result<T, E> {
     const CELLS: usize = 1 + T::CELLS + E::CELLS;
     fn declare(inputs: &mut Inputs, attrs: &Attrs) -> ResultHw<T, E> {
         attrs.expect_cells(<Self as HwType>::CELLS);
+        let tag_cell = inputs.next_cell();
         let tag = declare_scalar::<bool>(inputs, &attrs.part(0, 1));
-        let ok = T::declare(inputs, &attrs.part(1, T::CELLS).holding_zero());
-        let err = E::declare(inputs, &attrs.part(1 + T::CELLS, E::CELLS).holding_zero());
+        let ok = T::declare(inputs, &attrs.part(1, T::CELLS).in_variant(tag_cell, 0));
+        let err = E::declare(inputs, &attrs.part(1 + T::CELLS, E::CELLS).in_variant(tag_cell, 1));
         ResultHw { __tag: tag, __Ok__0: ok, __Err__0: err }
     }
     fn encode(&self, out: &mut Vec<f32>) {

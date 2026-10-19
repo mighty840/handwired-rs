@@ -15,10 +15,11 @@ and export it as bytes. A device runs those bytes with this crate:
 - **Logic as data.** A program is a file. Its SHA-256 identifies it, so a device can report which logic made a
   decision, and anyone can replay its inputs elsewhere and get the same outputs. Programs can be updated without
   reflashing code.
-- **Refuses what it can't do exactly.** Inputs outside the ranges the function declared, or between the steps of
-  their grids (200.5 for an `i16`, 0.5 for a `bool` or an enum's variant), are refused, since the circuit is only
-  exact on them. Damaged bytes are refused at load time (checksum and structure), so a run never
-  reads out of bounds.
+- **Refuses what it can't do exactly.** Inputs outside the ranges the function declared, between the steps of
+  their grids (200.5 for an `i16`, 0.5 for a `bool` or an enum's variant), or that aren't an encoding of a value of
+  their type (an enum variant's cells set while another variant is selected, 3 for an enum whose discriminants are
+  2 and 5) are refused, since the circuit is only exact on the function's values. Damaged bytes are refused at load
+  time (checksum and structure), so a run never reads out of bounds.
 
 ## Export on the host
 
@@ -117,5 +118,6 @@ code.
 
 ## Format
 
-Version 2, little-endian; see `handwired_rs::export` (`src/export.rs`) for the layout. Version 1 programs, which
-carry no grids, still run, checked against their ranges only. This crate refuses other versions.
+Version 3, little-endian; see `handwired_rs::export` (`src/export.rs`) for the layout. Version 1 programs, which
+carry no grids, still run, checked against their ranges only, and version 2 programs, which carry no enum variants,
+against their ranges and grids. This crate refuses other versions.

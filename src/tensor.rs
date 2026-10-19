@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use crate::Error;
-use crate::circuit::{Circuit, OpKind, OutOfRange, resolve_index_position};
+use crate::circuit::{Circuit, OpKind, OutOfRange, SourceRule, resolve_index_position};
 use crate::gather::{GatherPlan, plan_gather_lowering};
 use crate::numeric::{Range, evaluate_boolean, relu32};
 use crate::wire::Wire;
@@ -96,6 +96,8 @@ pub struct TensorProgram {
     /// Each packed position's range and grid in the circuit, which hold wherever its assumptions do.
     pub ranges: Vec<Range>,
     pub grids: Vec<Option<f64>>,
+    /// Each source cell's rule beyond its range and grid, from the circuit.
+    pub source_rules: Vec<SourceRule>,
 }
 
 impl TensorProgram {
@@ -296,6 +298,7 @@ impl Circuit {
         TensorProgram {
             ranges,
             grids,
+            source_rules: self.source_rules().to_vec(),
             layers,
             roots,
             source_size,

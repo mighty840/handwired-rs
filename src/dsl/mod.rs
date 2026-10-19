@@ -33,8 +33,8 @@ use wide::Limbs;
 
 pub use bits::{Shift, shl, shr};
 pub use compiled::{
-    Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_scalar, iteration_limit,
-    sample_variant,
+    Attrs, Compiled, EncodedRecords, HwType, Inputs, Params, Report, Rng, VerifyError, declare_enum, declare_scalar,
+    iteration_limit, sample_variant,
 };
 pub use control::{
     Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Native, Placeholder, StoreElem, Unify, cast, choose, if_else,

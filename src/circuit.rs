@@ -22,6 +22,17 @@ use crate::numeric::{
 };
 use crate::wire::{Lin, Term, Wire};
 
+/// What a source cell's parameter declares beyond its range and grid, which an exported program checks inputs
+/// against.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceRule {
+    /// For a cell of an enum variant's fields: the source cell of the enum's tag, the tag that selects the variant,
+    /// and the cell's range where it's selected. Elsewhere the cell holds 0.
+    pub variant: Option<(usize, u32, Range)>,
+    /// For a fieldless enum with gaps between its discriminants: the values it allows, in increasing order.
+    pub values: Option<Vec<f32>>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OpKind {
     Affine,
@@ -171,6 +182,7 @@ pub struct Circuit {
     pub(crate) tables: Vec<CandidateTable>,
     table_by_content: HashMap<Vec<Wire>, usize>,
     pub(crate) one_hot_groups: Vec<OneHotGroup>,
+    source_rules: Vec<SourceRule>,
 }
 
 impl Circuit {
@@ -188,6 +200,7 @@ impl Circuit {
             tables: Vec::new(),
             table_by_content: HashMap::new(),
             one_hot_groups: Vec::new(),
+            source_rules: vec![SourceRule::default(); source_size],
         }
     }
 
@@ -272,6 +285,26 @@ impl Circuit {
             );
         }
         self.ranges[wire.index()] = narrowed;
+    }
+
+    /// Each source cell's rule beyond its range and grid.
+    pub fn source_rules(&self) -> &[SourceRule] {
+        &self.source_rules
+    }
+
+    /// Declare source cell `cell` a field of an enum variant: within `range` where source cell `tag`, which comes
+    /// before it, holds `value`, and 0 elsewhere.
+    pub fn declare_source_variant(&mut self, cell: usize, tag: usize, value: u32, range: Range) {
+        assert!(tag < cell && cell < self.source_size, "a variant's tag cell {tag} comes after its field {cell}");
+        self.source_rules[cell].variant = Some((tag, value, range));
+    }
+
+    /// Declare that source cell `cell` holds one of `values` where it's selected, e.g. an enum's discriminants.
+    pub fn declare_source_values(&mut self, cell: usize, mut values: Vec<f32>) {
+        assert!(cell < self.source_size, "source cell {cell} is outside the source table");
+        values.sort_by(f32::total_cmp);
+        values.dedup();
+        self.source_rules[cell].values = Some(values);
     }
 
     /// Declare that every value of the wire is a multiple of `step`, a power of two.
