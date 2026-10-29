@@ -7,7 +7,10 @@ HOMEPAGE = "https://github.com/mighty840/handwired-rs"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-SRC_URI = "file://heater.hwc"
+# Signed for slot "heater", release 1, by example.pub. The example's secret key was discarded: sign your own programs
+# with a key of your own (handwired-sign keygen) and replace both files.
+SRC_URI = "file://heater.hwc file://heater.hwc.sig file://example.pub"
 HANDWIRED_PROGRAMS = "heater.hwc"
+HANDWIRED_TRUSTED_KEYS = "example.pub"
 
 inherit handwired-program

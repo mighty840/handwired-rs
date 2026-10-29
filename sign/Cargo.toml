@@ -2,6 +2,7 @@
 name = "handwired-rs-sign"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 license = "MIT"
 repository = "https://github.com/mighty840/handwired-rs"
 keywords = ["circuit", "no-std", "embedded", "signature", "ed25519"]

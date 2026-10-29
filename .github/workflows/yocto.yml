@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["meta-handwired/**", "run/**", ".github/workflows/yocto.yml"]
+    paths: ["meta-handwired/**", "run/**", "sign/**", ".github/workflows/yocto.yml"]
 
 jobs:
   scarthgap:
@@ -37,21 +37,26 @@ jobs:
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-      - name: Use this commit's handwired-rs-run (it isn't on crates.io yet)
+      - name: Use this commit's handwired-rs-run and handwired-rs-sign (they aren't on crates.io yet)
         run: |
-          cargo package -p handwired-rs-run
-          crate=target/package/handwired-rs-run-0.1.0.crate
-          sum=$(sha256sum "$crate" | cut -d' ' -f1)
-          # The recipe fetches crate://crates.io/handwired-rs-run/0.1.0; with the package already in the download
-          # directory and its checksum in the recipe, the fetcher takes it from there.
-          sed -i "s/^SRC_URI\[handwired-rs-run.sha256sum\] = .*/SRC_URI[handwired-rs-run.sha256sum] = \"$sum\"/" \
-            meta-handwired/recipes-handwired/handwired-run/handwired-run_0.1.0.bb
-          grep -n "sha256sum" meta-handwired/recipes-handwired/handwired-run/handwired-run_0.1.0.bb
-          mkdir -p /mnt/yocto/build/downloads && cp "$crate" /mnt/yocto/build/downloads/
+          mkdir -p /mnt/yocto/build/downloads
+          for tool in run sign; do
+            cargo package -p handwired-rs-$tool
+            crate=target/package/handwired-rs-$tool-0.1.0.crate
+            sum=$(sha256sum "$crate" | cut -d' ' -f1)
+            # The recipe fetches crate://crates.io/handwired-rs-$tool/0.1.0; with the package already in the
+            # download directory and its checksum in the recipe, the fetcher takes it from there.
+            recipe=meta-handwired/recipes-handwired/handwired-${tool}/handwired-${tool}_0.1.0.bb
+            sed -i "s/^SRC_URI\[handwired-rs-$tool.sha256sum\] = .*/SRC_URI[handwired-rs-$tool.sha256sum] = \"$sum\"/" "$recipe"
+            grep -n "sha256sum" "$recipe"
+            cp "$crate" /mnt/yocto/build/downloads/
+          done
       - name: The example program is what export_heater writes
         run: |
           cargo run --release -p handwired-rs-run --example export_heater -- /tmp/heater.hwc
           cmp /tmp/heater.hwc meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
+          files=meta-handwired/recipes-handwired/handwired-heater/files
+          cargo run --release -p handwired-rs-sign --features std -- verify --key $files/example.pub $files/heater.hwc
       - name: Build the image
         run: kas build "$KAS_FILE"
       - name: Test the image in QEMU

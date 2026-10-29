@@ -1,4 +1,5 @@
-# Runs the example program on the image: the runner, the installed program, its manifest, and refused inputs.
+# Runs the example program on the image: the runner, the installed program, its manifest, refused inputs, and its
+# signature.
 
 from oeqa.core.decorator.depends import OETestDepends
 from oeqa.runtime.case import OERuntimeTestCase
@@ -7,6 +8,7 @@ from oeqa.runtime.decorator.package import OEHasPackage
 
 class HandwiredTest(OERuntimeTestCase):
     PROGRAM = '/usr/share/handwired/heater.hwc'
+    KEY = '/etc/handwired/trusted/example.pub'
 
     @OETestDepends(['ssh.SSHTest.test_ssh'])
     @OEHasPackage(['handwired-run'])
@@ -38,3 +40,19 @@ class HandwiredTest(OERuntimeTestCase):
         status, output = self.target.run("echo '200.5 21 0' | handwired-run %s" % self.PROGRAM)
         self.assertNotEqual(status, 0, msg=output)
         self.assertIn('not a multiple of 1', output)
+
+    @OETestDepends(['handwired.HandwiredTest.test_program_runs'])
+    @OEHasPackage(['handwired-sign'])
+    def test_signature_verifies(self):
+        status, output = self.target.run('handwired-sign verify --key %s %s' % (self.KEY, self.PROGRAM))
+        self.assertEqual(status, 0, msg=output)
+        self.assertIn('slot heater, sequence 1, signed by', output)
+
+    @OETestDepends(['handwired.HandwiredTest.test_signature_verifies'])
+    def test_changed_program_is_refused(self):
+        # One byte more, as a changed copy would be: the checksum could be redone, the signature can't.
+        status, output = self.target.run(
+            'cp %s /tmp/changed.hwc && printf x >> /tmp/changed.hwc && '
+            'handwired-sign verify --key %s /tmp/changed.hwc %s.sig' % (self.PROGRAM, self.KEY, self.PROGRAM))
+        self.assertNotEqual(status, 0, msg=output)
+        self.assertIn("doesn't match", output)
