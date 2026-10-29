@@ -535,3 +535,33 @@ fn damaged_bytes_are_refused_without_a_panic() {
     }
     assert!(refused > 1_000, "only {refused} damaged programs refused");
 }
+
+/// A version 1 program by hand: one input in 0..=0, one layer with a one-hot group over it and one read of `count`
+/// candidates, all the input, gather (`index` false) or index; its output is the read's row.
+fn one_read(index: bool, count: u32) -> Vec<u8> {
+    let mut words: Vec<u32> = vec![1, 0, 1, 2, 1, 1, 1]; // version, description, sources, values, slots, roots, layers
+    words.extend([0, 0, 0, 0]); // the input's range, as two f64 zeros
+    words.push(1); // the output: the layer's row
+    words.extend([1, 1, 0, 0, 0, 1, !index as u32, index as u32]); // output size, rows, entries, ..., reads
+    words.extend([0, 0, 0]); // the bias and row offsets
+    words.extend([0, 1, 0]); // the one-hot group: slot 0, over the input
+    words.extend([0, 0, 0, count]); // row 0, slot or index row 0, mask or flags 0
+    words.resize(words.len() + count as usize, 0);
+    let mut bytes = b"HWCIRC\0\0".to_vec();
+    bytes.extend(words.iter().flat_map(|word| word.to_le_bytes()));
+    let sum = handwired_rs_run::checksum(&bytes);
+    bytes.extend(sum.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn reads_have_at_most_2_to_the_24_candidates() {
+    for index in [false, true] {
+        for count in [1, 1 << 24] {
+            let bytes = one_read(index, count);
+            let program = Program::parse(&bytes).unwrap_or_else(|error| panic!("{count} candidates: {error}"));
+            assert_eq!(evaluate(&program, &[0.0]).unwrap(), [0.0]);
+        }
+        assert!(matches!(Program::parse(&one_read(index, (1 << 24) + 1)), Err(Error::Malformed(_))));
+    }
+}

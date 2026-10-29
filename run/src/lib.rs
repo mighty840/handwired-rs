@@ -327,8 +327,9 @@ fn check(bytes: &[u8], layer: &Layer, available: usize, gather_slots: usize) -> 
     for _ in 0..layer.gather_reads.1 {
         let (row, slot, masked) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
         let count = word(bytes, at + 12) as usize;
-        if row >= layer.rows || slot >= gather_slots || masked > 1 || count == 0 {
-            return Err(fail("a gather read names a row or slot the layer doesn't have, or no candidates"));
+        // At most 2^24 candidates, as for an index read: `run` clamps the selected position to an i32.
+        if row >= layer.rows || slot >= gather_slots || masked > 1 || count == 0 || count > 1 << 24 {
+            return Err(fail("a gather read names a row or slot the layer doesn't have, or no candidates or too many"));
         }
         positions(at + 16, count)?;
         at += 16 + 4 * count;
@@ -338,7 +339,7 @@ fn check(bytes: &[u8], layer: &Layer, available: usize, gather_slots: usize) -> 
         let (row, index_row, flags) = (word(bytes, at) as usize, word(bytes, at + 4) as usize, word(bytes, at + 8));
         let count = word(bytes, at + 12) as usize;
         if row >= layer.rows || index_row >= layer.rows || flags > 3 || count == 0 || count > 1 << 24 {
-            return Err(fail("an index read names a row the layer doesn't have, or no candidates"));
+            return Err(fail("an index read names a row the layer doesn't have, or no candidates or too many"));
         }
         positions(at + 16, count)?;
         at += 16 + 4 * count;
@@ -786,6 +787,9 @@ fn round_boolean(score: f32) -> f32 {
     const BASE: f32 = 8_388_609.0;
     (score + BASE) - BASE
 }
+
+#[cfg(kani)]
+mod proofs;
 
 #[cfg(test)]
 mod tests {

@@ -89,6 +89,21 @@ jobs:
             cargo build -p handwired-rs-sign --lib --release --features log --target "$target"
           done
 
+  kani:
+    name: Kani proofs of the runner's numeric helpers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Kani 0.68.0
+        run: cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup
+      # The proofs of parse and run need up to 14 GB, more than this runner has: run/kani.sh runs them.
+      - name: Prove
+        working-directory: run
+        run: |
+          ./kani.sh grid_exponent_finds_exactly_the_allowed_powers_of_two on_grid_is_divisibility \
+            f32_at_least_is_the_f64_comparison f32_at_most_is_the_f64_comparison next_f32_is_the_neighbour \
+            relu_and_keep_if_are_their_definitions round_boolean_rounds_half_up
+
   qemu:
     name: Run the runner on emulated Cortex-M0 and Cortex-M3 (QEMU)
     runs-on: ubuntu-24.04

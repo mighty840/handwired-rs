@@ -116,6 +116,25 @@ programs took 136 to 10,600 times the cycles of native code, and 4 to 290 times 
 a fixed list of operations, exactness and the program as data, not speed. The runner itself is about 6 KB of
 code.
 
+## Proofs
+
+`src/proofs.rs` holds [Kani](https://github.com/model-checking/kani) proofs, compiled only by Kani, so the runner
+doesn't change; `./kani.sh` runs them one at a time (Kani 0.68.0, about 11 minutes and up to 14 GB of memory):
+
+- Every numeric helper (the grid test, the f32 range bounds, ReLU, the boolean rounding) does what its comment
+  says, for every f32 or f64.
+- `Program::parse` doesn't panic on any file of up to 96 bytes, in two parts: one layer of any 64 bytes read and
+  checked, and everything else with the layer's reading and checking replaced by stand-ins that give any answer the
+  real ones could.
+- `Program::run` doesn't panic on any program `parse` accepts of one shape: one layer with every kind of operation,
+  on two inputs with a value set. The shape fixes the counts, and every other word of the file is free, as is every
+  input. Wrong lengths of inputs, scratch and outputs get their errors. With no `unsafe` in the crate, that is
+  what "a run can't read out of bounds" means for programs of that shape.
+
+The proofs are bounded: by the sizes above, by a 64-bit `usize`, and with the checksum and the description's UTF-8
+check replaced by stand-ins that give either answer. Each one shows, with `kani::cover!`, that it reaches the case
+it's about, such as a run that completes.
+
 ## Format
 
 Version 3, little-endian; see `handwired_rs::export` (`src/export.rs`) for the layout. Version 1 programs, which

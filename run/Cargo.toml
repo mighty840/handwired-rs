@@ -24,3 +24,7 @@ required-features = ["std"]
 
 [dev-dependencies]
 handwired-rs = { path = ".." }
+
+# Kani compiles src/proofs.rs under cfg(kani); nothing else does.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

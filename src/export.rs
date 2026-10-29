@@ -30,7 +30,7 @@
 //!              computes × (u32 slot, u32 count, count × u32 bit positions)
 //!              gather_reads × (u32 row, u32 slot, u32 masked, u32 count, count × u32 candidate positions)
 //!              index_reads × (u32 row, u32 index_row, u32 flags, u32 count, count × u32 candidate positions),
-//!              flags bit 0: zero below the table, bit 1: zero above it
+//!              flags bit 0: zero below the table, bit 1: zero above it; a read has 1 to 2^24 candidates
 //! ```
 //!
 //! Packed positions `0..source_size` are the source cells; each layer appends its `output_size` values after the
