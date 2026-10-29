@@ -13,7 +13,11 @@ data:
 - `handwired-sign`, from the `handwired-rs-sign` crate, checks a program's Ed25519 signature: that a trusted key
   signed it, for which slot and release. With `HANDWIRED_TRUSTED_KEYS`, the class refuses at build time any program
   not signed by one of those keys, and installs the signatures and keys so the device can check later updates.
-- `handwired-heater` is an example program, exported by `run/examples/export_heater.rs` and signed.
+- With `HANDWIRED_REPORTS`, each program's proof report (`PROGRAM.proof.json`, see handwired-rs-sign's README) is
+  checked at build time to name the program's SHA-256, installed beside it and listed in the manifest; the image's
+  SPDX documents list it with its hash, and the recipe's SPDX document pairs it with its program in an annotation.
+- `handwired-heater` is an example program, exported by `run/examples/export_heater.rs`, signed, and with a proof
+  report: its whole domain of 85,852 inputs gives the function's outputs, bit for bit.
 
 ## Use
 

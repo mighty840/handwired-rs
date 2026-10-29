@@ -1,0 +1,30 @@
+{
+  "format": "handwired-proof-report 1",
+  "program": {
+    "file": "heater.hwc",
+    "sha256": "8f1076fbfa5991c836ab0a96e8efaa39ea3f7bb53b2d6d9402d32021eb22bcff",
+    "bytes": 11914,
+    "format_version": 3
+  },
+  "domain": "every input handwired-rs-run accepts for this file: tenths in -400..=1250, setpoint in 5..=30, boost 0 or 1 (85852 inputs)",
+  "claims": [
+    {
+      "kind": "exhaustive",
+      "statement": "on every input of the domain, the output cells handwired-rs-run computes equal, bit for bit, the encoding of what the Rust function heater returns",
+      "method": "enumeration of the domain",
+      "tool": "handwired-rs-sign example heater_report, with handwired-rs-run from the same repository",
+      "inputs": 85852,
+      "mismatches": 0,
+      "result": "holds"
+    }
+  ],
+  "assumes": [
+    "IEEE 754 binary32 addition and multiplication, round to nearest, subnormals not flushed, on the device",
+    "the runner as built for the device computes as the runner that ran the check"
+  ],
+  "not_covered": [
+    "the sign of a zero output",
+    "whether the Rust function is the right function: the claim is equality with it"
+  ],
+  "generated_by": "handwired-rs-sign example heater_report"
+}

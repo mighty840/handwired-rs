@@ -84,6 +84,46 @@ reordered entry, but not entries cut off the end or a whole log swapped for anot
 compare. On a microcontroller, `log::admit` works on the log's bytes and returns the entry to append; append it
 before acting on the decision.
 
+## Proof reports
+
+A signature says who released a program and the log what a device installed; a proof report says what is known
+about what the program computes. It is a JSON file beside the program, `heater.hwc.proof.json`, that names the
+program by its SHA-256, so it is about exactly those bytes:
+
+```json
+{
+  "format": "handwired-proof-report 1",
+  "program": { "file": "heater.hwc", "sha256": "8f1076fb…", "bytes": 11914, "format_version": 3 },
+  "domain": "every input handwired-rs-run accepts for this file: …",
+  "claims": [
+    {
+      "kind": "exhaustive",
+      "statement": "on every input of the domain, the output cells … equal, bit for bit, … what the Rust function returns",
+      "method": "enumeration of the domain",
+      "tool": "…",
+      "inputs": 85852,
+      "mismatches": 0,
+      "result": "holds"
+    }
+  ],
+  "assumes": ["IEEE 754 binary32 addition and multiplication, round to nearest, subnormals not flushed, …"],
+  "not_covered": ["the sign of a zero output", "…"],
+  "generated_by": "…"
+}
+```
+
+`kind` is one of `exhaustive` (every input of the domain run and compared), `equivalence` (proved equal to a
+specification, e.g. by an SMT solver), `range-certificate` (every value proved to stay in its range, so no f32
+operation rounds), `property` (a statement about one run) and `temporal` (a statement over many runs of a program
+with state). A claim proved by a solver names it with its version and adds `"query": { "path": …, "sha256": … }`,
+the exact query, so anyone can run it again; `result` is `holds`, `violated` or `unknown`. A report has no dates, so
+the same evidence gives the same file.
+
+`cargo run --release -p handwired-rs-sign --features log --example heater_report -- heater.hwc` writes the report of
+the Yocto layer's example: it runs every one of the program's 85,852 accepted inputs through handwired-rs-run and
+compares the output bits with the Rust function's. The layer checks that each report names its program's hash,
+installs it beside the program and lists it in the image's manifest and SPDX documents.
+
 ## Format
 
 ```text

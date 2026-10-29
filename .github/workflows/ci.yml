@@ -35,6 +35,11 @@ jobs:
         run: |
           sudo apt-get install -y python3-cryptography
           python3 -I sign/tests/independent_check.py
+      - name: The example's proof report is what its generator writes
+        run: |
+          files=meta-handwired/recipes-handwired/handwired-heater/files
+          cargo run --release -p handwired-rs-sign --features log --example heater_report -- $files/heater.hwc /tmp/report.json
+          cmp /tmp/report.json $files/heater.hwc.proof.json
       - name: Run the 100,000-record search example
         run: cargo run --release -p handwired-rs-gpu --example search
       - name: Run the key-value store example

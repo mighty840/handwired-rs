@@ -57,8 +57,15 @@ jobs:
           cmp /tmp/heater.hwc meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
           files=meta-handwired/recipes-handwired/handwired-heater/files
           cargo run --release -p handwired-rs-sign --features std -- verify --key $files/example.pub $files/heater.hwc
+          cargo run --release -p handwired-rs-sign --features log --example heater_report -- $files/heater.hwc /tmp/report.json
+          cmp /tmp/report.json $files/heater.hwc.proof.json
       - name: Build the image
         run: kas build "$KAS_FILE"
+      - name: The SPDX documents list the proof report and pair it with its program
+        run: |
+          spdx=/mnt/yocto/build/tmp/deploy/spdx
+          find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -l 'HANDWIRED_REPORTS=heater.hwc.proof.json'
+          find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -lE '"fileName": "[^"]*heater\.hwc\.proof\.json"'
       - name: Test the image in QEMU
         run: kas shell "$KAS_FILE" -c "bitbake core-image-minimal -c testimage"
       - name: Keep the logs

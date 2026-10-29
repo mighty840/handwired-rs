@@ -23,6 +23,10 @@ std = ["alloc", "log"]
 name = "handwired-sign"
 required-features = ["std"]
 
+[[example]]
+name = "heater_report"
+required-features = ["log"]
+
 [dependencies]
 # opt_size: on a Cortex-M4 or M33, verification is 15 to 19 KiB of code instead of up to 360 KiB at opt-level 3.
 ed25519-compact = { version = "2.6", default-features = false, features = ["opt_size"] }

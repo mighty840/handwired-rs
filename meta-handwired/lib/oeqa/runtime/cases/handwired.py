@@ -1,5 +1,7 @@
 # Runs the example program on the image: the runner, the installed program, its manifest, refused inputs, its
-# signature, and a version log.
+# signature, a version log, and its proof report.
+
+import json
 
 from oeqa.core.decorator.depends import OETestDepends
 from oeqa.runtime.case import OERuntimeTestCase
@@ -78,3 +80,14 @@ class HandwiredTest(OERuntimeTestCase):
         self.assertTrue(lines[0].endswith(': installed'), msg=output)
         self.assertTrue(lines[1].endswith("refused: the signature doesn't match"), msg=output)
         self.assertIn('2 entries, head ', lines[2])
+
+    @OETestDepends(['handwired.HandwiredTest.test_manifest_matches'])
+    def test_proof_report_names_the_program(self):
+        status, output = self.target.run('sha256sum %s' % self.PROGRAM)
+        self.assertEqual(status, 0, msg=output)
+        digest = output.split()[0]
+        status, output = self.target.run('cat %s.proof.json' % self.PROGRAM)
+        self.assertEqual(status, 0, msg=output)
+        report = json.loads(output)
+        self.assertEqual(report['program']['sha256'], digest)
+        self.assertEqual([claim['result'] for claim in report['claims']], ['holds'])

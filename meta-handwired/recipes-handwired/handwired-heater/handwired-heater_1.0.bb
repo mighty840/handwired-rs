@@ -9,8 +9,11 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 # Signed for slot "heater", release 1, by example.pub. The example's secret key was discarded: sign your own programs
 # with a key of your own (handwired-sign keygen) and replace both files.
-SRC_URI = "file://heater.hwc file://heater.hwc.sig file://example.pub"
+# heater.hwc.proof.json: every one of its 85,852 accepted inputs gives the function's outputs, bit for bit
+# (sign/examples/heater_report.rs in handwired-rs).
+SRC_URI = "file://heater.hwc file://heater.hwc.sig file://heater.hwc.proof.json file://example.pub"
 HANDWIRED_PROGRAMS = "heater.hwc"
 HANDWIRED_TRUSTED_KEYS = "example.pub"
+HANDWIRED_REPORTS = "heater.hwc.proof.json"
 
 inherit handwired-program
