@@ -425,8 +425,9 @@ logic took 1.7 ms at 32 MHz.
 
 The checksum catches damaged files, not changed ones. [`handwired-rs-sign`](sign/README.md) adds Ed25519 signatures
 as a file beside each program (`heater.hwc.sig`): a device checks that a program was signed by a key it trusts, for the
-slot it is loaded into, with a release number it can use to refuse older programs. It is `no_std` and allocation-free,
-with one dependency, and the program files and the runner don't change.
+slot it is loaded into, with a release number it can use to refuse older programs, and keeps a hash-chained version
+log of every program presented, installed or refused. It is `no_std` and allocation-free, and the program files and
+the runner don't change.
 
 ## Two larger examples
 

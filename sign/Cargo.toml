@@ -7,15 +7,17 @@ license = "MIT"
 repository = "https://github.com/mighty840/handwired-rs"
 keywords = ["circuit", "no-std", "embedded", "signature", "ed25519"]
 categories = ["no-std", "embedded", "cryptography"]
-description = "Ed25519 signatures for handwired program files: a device checks a program's key, slot and release before running it; no_std, no allocation"
+description = "Ed25519 signatures and a version log for handwired program files: a device checks a program's key, slot and release before running it, and records what it installed; no_std, no allocation"
 readme = "README.md"
 
 [features]
 default = []
 # sign(), which builds the signature file.
 alloc = []
+# The version log (module log): a hash chain of the programs presented for each slot, accepted or refused.
+log = ["dep:hmac-sha256"]
 # std::error::Error, and the handwired-sign command.
-std = ["alloc"]
+std = ["alloc", "log"]
 
 [[bin]]
 name = "handwired-sign"
@@ -24,6 +26,8 @@ required-features = ["std"]
 [dependencies]
 # opt_size: on a Cortex-M4 or M33, verification is 15 to 19 KiB of code instead of up to 360 KiB at opt-level 3.
 ed25519-compact = { version = "2.6", default-features = false, features = ["opt_size"] }
+# SHA-256 for the version log; no dependencies of its own either.
+hmac-sha256 = { version = "1.1", default-features = false, optional = true }
 
 [dev-dependencies]
 handwired-rs = { path = ".." }

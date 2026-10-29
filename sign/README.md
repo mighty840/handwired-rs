@@ -2,8 +2,10 @@
 
 Signatures for program files exported by [handwired-rs](https://crates.io/crates/handwired-rs). A device checks
 that a program comes from a key it trusts, for the slot it is loaded into, before handing the bytes to
-[handwired-rs-run](../run/README.md). `no_std`, no allocation, no `unsafe`; its one dependency,
-[`ed25519-compact`](https://crates.io/crates/ed25519-compact), has none of its own.
+[handwired-rs-run](../run/README.md), and keeps a version log of what it installed. `no_std`, no allocation, no
+`unsafe`. Signatures need one dependency, [`ed25519-compact`](https://crates.io/crates/ed25519-compact); the log
+(feature `log`) adds [`hmac-sha256`](https://crates.io/crates/hmac-sha256) for SHA-256. Neither has dependencies of
+its own.
 
 The runner's checksum catches damaged files, not changed ones: anyone who can write a file can write a valid
 checksum. A signature can only be made with the secret key, which stays with whoever releases programs, never on the
@@ -14,8 +16,8 @@ device or in the image.
 - **For one slot.** A signature names the slot the program is for (`estop`, `heater`), so a validly signed program
   can't be loaded in place of another.
 - **With a release number.** A signature carries a sequence number. [`verify`] returns it, and the device must refuse
-  one below the last it accepted for that slot, or an old, validly signed program could be loaded again. Keeping
-  that number, and a log of what was loaded, is the device's job.
+  one below the last it accepted for that slot, or an old, validly signed program could be loaded again. The
+  version log below does that.
 
 It is Ed25519 (RFC 8032) over `"handwired-rs signed program v1\0" ‖ slot length (1 byte) ‖ slot ‖ sequence (u64
 LE) ‖ program`. Verification reads the program once and needs no buffer for it.
@@ -57,6 +59,31 @@ crate builds `ed25519-compact` with its `opt_size` feature, without which opt-le
 about 85 µs for a 12 KiB program on a recent x86 laptop. A device with secure boot may instead check signatures with
 the code and keys it already trusts, since the format is plain Ed25519.
 
+## Version log
+
+With the `log` feature, a device keeps a log of every program presented for each slot, installed or refused, and
+`log::admit` decides from it:
+
+- a valid signature under a trusted key, for this slot, is required;
+- a release below the slot's installed one is refused, and the installed release number with other bytes too;
+  the same program again is a re-install;
+- every decision is an entry, refusals included (untrusted key, signature mismatch, other slot, older release,
+  release reused, unreadable signature): the evidence of attempted changes.
+
+```sh
+handwired-sign log new /var/lib/handwired/log
+handwired-sign admit --log /var/lib/handwired/log --key release.pub --slot heater heater.hwc   # exit 0: installed
+handwired-sign log show /var/lib/handwired/log
+```
+
+An entry is 178 bytes: the device's time, the outcome, the slot, the sequence and key the signature claims, the
+program's SHA-256 (the same as in a `sha256sum` manifest) and the hash of the entry before; a header with a 32-byte
+log id starts the chain. Ten installs a year for five years is under 9 KiB. The chain shows a changed, removed or
+reordered entry, but not entries cut off the end or a whole log swapped for another consistent one: keep the head
+(`log check` prints the entry count and last hash) where an attacker can't write it, or report it elsewhere, and
+compare. On a microcontroller, `log::admit` works on the log's bytes and returns the entry to append; append it
+before acting on the decision.
+
 ## Format
 
 ```text
@@ -65,7 +92,8 @@ UTF-8) ‖ signature (64)
 ```
 
 The public key in the file only says which key signed: [`verify`] accepts the signature only under a key in its
-trusted list. `tests/independent_check.py` rebuilds a pinned signature file from this description with another
-Ed25519 implementation (Python's `cryptography`) and checks it byte for byte.
+trusted list. `tests/independent_check.py` rebuilds a pinned signature file and a pinned version log from their
+descriptions with other implementations (Python's `cryptography` and `hashlib`) and checks them byte for byte. The
+log's layout is documented in `src/log.rs`.
 
 [`verify`]: https://docs.rs/handwired-rs-sign/latest/handwired_rs_sign/fn.verify.html

@@ -50,9 +50,15 @@ HANDWIRED_PROGRAMS = "thermostat.hwc"
 HANDWIRED_TRUSTED_KEYS = "release.pub"
 ```
 
-The build fails unless every program is signed by a trusted key. On the device, a program that arrives later is
-checked with `handwired-sign verify --key /etc/handwired/trusted/release.pub thermostat.hwc`, which prints its slot
-and release; refusing a release lower than the installed one is up to the device's update logic.
+The build fails unless every program is signed by a trusted key. On the device, a program that arrives later goes
+through `handwired-sign admit`, which checks its signature and slot, refuses a release older than the installed one,
+and records the decision either way in a hash-chained version log:
+
+```sh
+handwired-sign log new /var/lib/handwired/log        # once
+handwired-sign admit --log /var/lib/handwired/log --key /etc/handwired/trusted/release.pub \
+    --slot thermostat thermostat.hwc && cp thermostat.hwc thermostat.hwc.sig /usr/share/handwired/
+```
 
 ## Build and test
 

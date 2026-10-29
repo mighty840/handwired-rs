@@ -31,7 +31,7 @@ jobs:
         run: cargo test -p handwired-rs-run --features std
       - name: Test signatures with std (the handwired-sign command)
         run: cargo test -p handwired-rs-sign --features std
-      - name: Check the pinned signature with another Ed25519 implementation
+      - name: Check the pinned signature and log with other Ed25519 and SHA-256 implementations
         run: |
           sudo apt-get install -y python3-cryptography
           python3 -I sign/tests/independent_check.py
@@ -81,7 +81,7 @@ jobs:
         run: |
           for target in thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imc-unknown-none-elf; do
             cargo build -p handwired-rs-run --lib --release --target "$target"
-            cargo build -p handwired-rs-sign --lib --release --target "$target"
+            cargo build -p handwired-rs-sign --lib --release --features log --target "$target"
           done
 
   qemu:

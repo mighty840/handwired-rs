@@ -1,7 +1,8 @@
 //! Signatures for programs exported by [handwired-rs](https://crates.io/crates/handwired-rs): a device checks that a
 //! program file comes from a key it trusts, for the slot it is loaded into, before it hands the bytes to
-//! [handwired-rs-run](https://crates.io/crates/handwired-rs-run). `no_std`, no allocation, no `unsafe`; its one
-//! dependency, `ed25519-compact`, has none of its own.
+//! [handwired-rs-run](https://crates.io/crates/handwired-rs-run), and, with the `log` feature, keeps a version
+//! log of what it installed. `no_std`, no allocation, no `unsafe`. Signatures need one dependency,
+//! `ed25519-compact`; the log adds `hmac-sha256` for SHA-256. Neither has dependencies of its own.
 //!
 //! A signature is a separate file next to the program (`heater.hwc.sig` beside `heater.hwc`), so the program's
 //! bytes, and the SHA-256 that identifies them in manifests and logs, don't change. It is Ed25519 (RFC 8032) over
@@ -13,7 +14,7 @@
 //! The slot names the place the program is for, e.g. `estop` or `heater`, so a validly signed program can't be
 //! loaded into a slot it wasn't signed for. The sequence numbers a slot's releases: [`verify`] returns it, and the
 //! device must refuse one lower than the last it accepted for that slot, or an old, validly signed program could be
-//! loaded again. Keeping that number, and a log of the programs loaded, is the device's job.
+//! loaded again. With the `log` feature, `log::admit` does that from the device's version log.
 //!
 //! The signature file is
 //!
@@ -45,6 +46,9 @@ extern crate std;
 
 use core::fmt;
 use ed25519_compact::{PublicKey, Signature};
+
+#[cfg(feature = "log")]
+pub mod log;
 
 /// The first 8 bytes of every signature file.
 pub const MAGIC: [u8; 8] = *b"HWCSIG\0\0";

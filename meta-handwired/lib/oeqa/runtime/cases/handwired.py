@@ -1,5 +1,5 @@
-# Runs the example program on the image: the runner, the installed program, its manifest, refused inputs, and its
-# signature.
+# Runs the example program on the image: the runner, the installed program, its manifest, refused inputs, its
+# signature, and a version log.
 
 from oeqa.core.decorator.depends import OETestDepends
 from oeqa.runtime.case import OERuntimeTestCase
@@ -56,3 +56,25 @@ class HandwiredTest(OERuntimeTestCase):
             'handwired-sign verify --key %s /tmp/changed.hwc %s.sig' % (self.PROGRAM, self.KEY, self.PROGRAM))
         self.assertNotEqual(status, 0, msg=output)
         self.assertIn("doesn't match", output)
+
+    @OETestDepends(['handwired.HandwiredTest.test_signature_verifies'])
+    def test_version_log(self):
+        log = '/tmp/handwired.log'
+        admit = 'handwired-sign admit --log %s --key %s --slot heater %%s' % (log, self.KEY)
+        status, output = self.target.run('rm -f %s && handwired-sign log new %s' % (log, log))
+        self.assertEqual(status, 0, msg=output)
+        status, output = self.target.run(admit % self.PROGRAM)
+        self.assertEqual(status, 0, msg=output)
+        self.assertIn('installed in slot heater, sequence 1', output)
+        # A changed copy, its signature beside it, is refused and logged.
+        status, output = self.target.run(
+            'cp %s /tmp/changed.hwc && cp %s.sig /tmp/changed.hwc.sig && printf x >> /tmp/changed.hwc && '
+            % (self.PROGRAM, self.PROGRAM) + admit % '/tmp/changed.hwc')
+        self.assertNotEqual(status, 0, msg=output)
+        self.assertIn("doesn't match", output)
+        status, output = self.target.run('handwired-sign log show %s' % log)
+        self.assertEqual(status, 0, msg=output)
+        lines = output.strip().splitlines()
+        self.assertTrue(lines[0].endswith(': installed'), msg=output)
+        self.assertTrue(lines[1].endswith("refused: the signature doesn't match"), msg=output)
+        self.assertIn('2 entries, head ', lines[2])

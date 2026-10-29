@@ -1,9 +1,10 @@
-//! `handwired-sign`: make keys, sign program files, and check signatures. Keys are raw files: a secret key is 64
-//! bytes (seed, then public key), a public key 32.
+//! `handwired-sign`: make keys, sign program files, check signatures, and keep a device's version log. Keys are raw
+//! files: a secret key is 64 bytes (seed, then public key), a public key 32.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
+use handwired_rs_sign::log::{self, Outcome};
 use handwired_rs_sign::{PUBLIC_KEY_BYTES, SECRET_KEY_BYTES};
 
 const USAGE: &str = "usage:\n\
@@ -11,9 +12,15 @@ const USAGE: &str = "usage:\n\
     \x20 handwired-sign sign --key SECRET_KEY --slot SLOT --sequence N PROGRAM [SIGNATURE]\n\
     \x20 handwired-sign verify --key PUBLIC_KEY [--key PUBLIC_KEY ...] PROGRAM [SIGNATURE]\n\
     \x20 handwired-sign show SIGNATURE\n\
+    \x20 handwired-sign log new LOG [--id HEX]\n\
+    \x20 handwired-sign log check LOG\n\
+    \x20 handwired-sign log show LOG\n\
+    \x20 handwired-sign admit --log LOG --key PUBLIC_KEY [--key ...] --slot SLOT [--time SECONDS] PROGRAM [SIGNATURE]\n\
     SIGNATURE defaults to PROGRAM.sig. keygen reads its seed from /dev/urandom and won't overwrite a file.\n\
     verify exits 0 only if a trusted key signed PROGRAM, and prints its slot and sequence; the device must still\n\
-    refuse a sequence below the last one it accepted for that slot.";
+    refuse a sequence below the last one it accepted for that slot, which admit does: it appends an entry to LOG\n\
+    whether PROGRAM is installed or refused (older release, other slot, untrusted key, ...), and exits 0 only if\n\
+    installed. --time defaults to now, in seconds since 1970. log new takes its id from /dev/urandom unless given.";
 
 enum Failure {
     /// The command line is wrong.
@@ -40,6 +47,13 @@ fn main() -> ExitCode {
         Some("sign") => sign(&args[1..]),
         Some("verify") => verify(&args[1..]),
         Some("show") => show(&args[1..]),
+        Some("log") => match args.get(1).map(String::as_str) {
+            Some("new") => log_new(&args[2..]),
+            Some("check") => log_check(&args[2..]),
+            Some("show") => log_show(&args[2..]),
+            _ => Err(Failure::Usage),
+        },
+        Some("admit") => admit(&args[1..]),
         _ => Err(Failure::Usage),
     };
     match result {
@@ -114,12 +128,17 @@ fn program_and_signature(positional: &[&str]) -> Result<(String, String), Failur
     }
 }
 
+fn random() -> Result<[u8; 32], Failure> {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .map_err(|error| about("/dev/urandom", error))?;
+    Ok(bytes)
+}
+
 fn keygen(args: &[String]) -> Result<(), Failure> {
     let [secret_path, public_path] = args else { return Err(Failure::Usage) };
-    let mut seed = [0u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut seed))
-        .map_err(|error| about("/dev/urandom", error))?;
+    let seed = random()?;
     let secret = handwired_rs_sign::secret_key_from_seed(seed)?;
     let public = handwired_rs_sign::public_key(&secret)?;
     create(secret_path, &secret, true)?;
@@ -173,4 +192,89 @@ fn show(args: &[String]) -> Result<(), Failure> {
     let claim = handwired_rs_sign::read(&bytes).map_err(|error| about(path, error))?;
     println!("slot {}, sequence {}, key {} (not checked)", claim.slot, claim.sequence, hex(&claim.public_key));
     Ok(())
+}
+
+fn log_new(args: &[String]) -> Result<(), Failure> {
+    let (named, positional) = options(args)?;
+    let [path] = positional.as_slice() else { return Err(Failure::Usage) };
+    let id = match named.as_slice() {
+        [] => random()?,
+        [("id", text)] => {
+            let bytes = (0..text.len())
+                .step_by(2)
+                .map(|at| text.get(at..at + 2).and_then(|pair| u8::from_str_radix(pair, 16).ok()))
+                .collect::<Option<Vec<u8>>>();
+            bytes.and_then(|bytes| bytes.try_into().ok()).ok_or(Failure::Because("--id is 64 hex digits".into()))?
+        }
+        _ => return Err(Failure::Usage),
+    };
+    create(path, &log::header(id), false)?;
+    println!("{path}: new log {}", hex(&id));
+    Ok(())
+}
+
+fn log_check(args: &[String]) -> Result<(), Failure> {
+    let [path] = args else { return Err(Failure::Usage) };
+    let head = log::check(&read(path)?).map_err(|error| about(path, error))?;
+    println!("{path}: {} entries, head {}", head.entries, hex(&head.hash));
+    Ok(())
+}
+
+fn log_show(args: &[String]) -> Result<(), Failure> {
+    let [path] = args else { return Err(Failure::Usage) };
+    let bytes = read(path)?;
+    let head = log::check(&bytes).map_err(|error| about(path, error))?;
+    for (index, entry) in log::entries(&bytes).map_err(|error| about(path, error))?.enumerate() {
+        println!(
+            "{index}: time {}, slot {}, sequence {}, program {}, key {}: {}",
+            entry.time,
+            entry.slot,
+            entry.sequence,
+            hex(&entry.program),
+            hex(&entry.key),
+            entry.outcome
+        );
+    }
+    println!("{} entries, head {}", head.entries, hex(&head.hash));
+    Ok(())
+}
+
+fn admit(args: &[String]) -> Result<(), Failure> {
+    let (named, positional) = options(args)?;
+    if named.iter().any(|(name, _)| !matches!(*name, "log" | "key" | "slot" | "time")) {
+        return Err(Failure::Usage);
+    }
+    let log_path = one(&named, "log")?;
+    let slot = one(&named, "slot")?;
+    if slot.len() > handwired_rs_sign::MAX_SLOT {
+        return Err(Failure::Because("a slot name is at most 64 bytes".into()));
+    }
+    let time = match named.iter().filter(|(name, _)| *name == "time").count() {
+        0 => std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs()),
+        _ => one(&named, "time")?.parse::<u64>().map_err(|_| Failure::Usage)?,
+    };
+    let trusted = named
+        .iter()
+        .filter(|(name, _)| *name == "key")
+        .map(|(_, path)| read_key::<PUBLIC_KEY_BYTES>(path, "public"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if trusted.is_empty() {
+        return Err(Failure::Usage);
+    }
+    let (program_path, signature_path) = program_and_signature(&positional)?;
+    let program = read(&program_path)?;
+    // A missing signature is refused and logged like any other.
+    let signature = std::fs::read(&signature_path).unwrap_or_default();
+    let log_bytes = read(log_path)?;
+    let admission =
+        log::admit(&log_bytes, &program, &signature, &trusted, slot, time).map_err(|error| about(log_path, error))?;
+    let mut file = std::fs::OpenOptions::new().append(true).open(log_path).map_err(|error| about(log_path, error))?;
+    file.write_all(&admission.entry).and_then(|()| file.sync_all()).map_err(|error| about(log_path, error))?;
+    match admission.outcome {
+        Outcome::Installed => {
+            println!("{program_path}: installed in slot {slot}, sequence {}", admission.signed.unwrap().sequence);
+            Ok(())
+        }
+        refused => Err(about(&program_path, refused)),
+    }
 }
