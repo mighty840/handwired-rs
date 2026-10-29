@@ -65,7 +65,11 @@ jobs:
         run: |
           spdx=/mnt/yocto/build/tmp/deploy/spdx
           find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -l 'HANDWIRED_REPORTS=heater.hwc.proof.json'
-          find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -lE '"fileName": "[^"]*heater\.hwc\.proof\.json"'
+          # Compact JSON unless SPDX_PRETTY is set, so no space after the colon; on failure, show what is listed.
+          if ! find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -lE '"fileName": ?"[^"]*heater\.hwc\.proof\.json"'; then
+            find "$spdx" -name '*heater*.spdx.json' -print0 | xargs -0 grep -ohE '"fileName": ?"[^"]*"' | sort -u
+            exit 1
+          fi
       - name: Test the image in QEMU
         run: kas shell "$KAS_FILE" -c "bitbake core-image-minimal -c testimage"
       - name: Keep the logs
