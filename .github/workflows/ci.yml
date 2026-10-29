@@ -29,6 +29,12 @@ jobs:
         run: cargo test --workspace --release
       - name: Test the runner with std (the handwired-run command)
         run: cargo test -p handwired-rs-run --features std
+      - name: Test signatures with std (the handwired-sign command)
+        run: cargo test -p handwired-rs-sign --features std
+      - name: Check the pinned signature with another Ed25519 implementation
+        run: |
+          sudo apt-get install -y python3-cryptography
+          python3 -I sign/tests/independent_check.py
       - name: Run the 100,000-record search example
         run: cargo run --release -p handwired-rs-gpu --example search
       - name: Run the key-value store example
@@ -58,6 +64,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (the runner with std)
         run: cargo clippy -p handwired-rs-run --all-targets --features std -- -D warnings
+      - name: Clippy (signatures with std)
+        run: cargo clippy -p handwired-rs-sign --all-targets --features std -- -D warnings
 
   embedded:
     name: Build the runner for microcontrollers (no_std)
@@ -73,6 +81,7 @@ jobs:
         run: |
           for target in thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imc-unknown-none-elf; do
             cargo build -p handwired-rs-run --lib --release --target "$target"
+            cargo build -p handwired-rs-sign --lib --release --target "$target"
           done
 
   qemu:
@@ -114,3 +123,4 @@ jobs:
         run: |
           cargo package -p handwired-rs-macros
           cargo package -p handwired-rs-run
+          cargo package -p handwired-rs-sign

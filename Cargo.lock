@@ -160,6 +160,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519-compact"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1454db4f2edb7f0e8fe0c5b375b0c978fc63244cc9f010d160e417eb10139aa8"
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -349,6 +355,15 @@ name = "handwired-rs-run"
 version = "0.1.0"
 dependencies = [
  "handwired-rs",
+]
+
+[[package]]
+name = "handwired-rs-sign"
+version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "handwired-rs",
+ "handwired-rs-run",
 ]
 
 [[package]]

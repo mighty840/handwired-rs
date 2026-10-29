@@ -423,6 +423,11 @@ command that runs a program over records on standard input. A run costs about 1.
 STM32WL55 (Cortex-M4 without an FPU), every output of 8 test programs matched the host bit for bit; heater-style
 logic took 1.7 ms at 32 MHz.
 
+The checksum catches damaged files, not changed ones. [`handwired-rs-sign`](sign/README.md) adds Ed25519 signatures
+as a file beside each program (`heater.hwc.sig`): a device checks that a program was signed by a key it trusts, for the
+slot it is loaded into, with a release number it can use to refuse older programs. It is `no_std` and allocation-free,
+with one dependency, and the program files and the runner don't change.
+
 ## Two larger examples
 
 **SHA-1, ported from a library and checked against it.** `cargo run --release --example sha1` ports `sha1_smol`'s

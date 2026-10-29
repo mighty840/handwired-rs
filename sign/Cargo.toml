@@ -1,0 +1,29 @@
+[package]
+name = "handwired-rs-sign"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mighty840/handwired-rs"
+keywords = ["circuit", "no-std", "embedded", "signature", "ed25519"]
+categories = ["no-std", "embedded", "cryptography"]
+description = "Ed25519 signatures for handwired program files: a device checks a program's key, slot and release before running it; no_std, no allocation"
+readme = "README.md"
+
+[features]
+default = []
+# sign(), which builds the signature file.
+alloc = []
+# std::error::Error, and the handwired-sign command.
+std = ["alloc"]
+
+[[bin]]
+name = "handwired-sign"
+required-features = ["std"]
+
+[dependencies]
+# opt_size: on a Cortex-M4 or M33, verification is 15 to 19 KiB of code instead of up to 360 KiB at opt-level 3.
+ed25519-compact = { version = "2.6", default-features = false, features = ["opt_size"] }
+
+[dev-dependencies]
+handwired-rs = { path = ".." }
+handwired-rs-run = { path = "../run" }
