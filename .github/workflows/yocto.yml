@@ -64,10 +64,11 @@ jobs:
       - name: The SPDX documents list the proof report and pair it with its program
         run: |
           spdx=/mnt/yocto/build/tmp/deploy/spdx
-          find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -l 'HANDWIRED_REPORTS=heater.hwc.proof.json'
-          # Compact JSON unless SPDX_PRETTY is set, so no space after the colon; on failure, show what is listed.
-          if ! find "$spdx" -name '*.spdx.json' -print0 | xargs -0 grep -lE '"fileName": ?"[^"]*heater\.hwc\.proof\.json"'; then
-            find "$spdx" -name '*heater*.spdx.json' -print0 | xargs -0 grep -ohE '"fileName": ?"[^"]*"' | sort -u
+          # grep -r, not find | xargs grep: xargs splits the files into batches and fails if any batch has no match.
+          grep -rl --include='*.spdx.json' 'HANDWIRED_REPORTS=heater.hwc.proof.json' "$spdx"
+          # On failure, show what the heater's documents list.
+          if ! grep -rlE --include='*.spdx.json' '"fileName": ?"[^"]*heater\.hwc\.proof\.json"' "$spdx"; then
+            grep -rhoE --include='*heater*.spdx.json' '"fileName": ?"[^"]*"' "$spdx" | sort -u
             exit 1
           fi
       - name: Test the image in QEMU
