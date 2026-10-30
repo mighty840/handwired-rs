@@ -8,7 +8,7 @@ use handwired_rs::dsl::HwType;
 use handwired_rs::handwired;
 use handwired_rs_run::Program;
 
-/// The function run/examples/export_heater.rs exports; the report is refused unless PROGRAM is exactly its export.
+/// The function run/examples/export_heater.rs exports; the report is refused unless PROGRAM is its export.
 #[handwired]
 fn heater(#[range(-400, 1250)] tenths: i16, #[range(5, 30)] setpoint: i16, boost: bool) -> (u8, bool) {
     let error = setpoint * 10 - tenths;
@@ -22,6 +22,23 @@ fn heater(#[range(-400, 1250)] tenths: i16, #[range(5, 30)] setpoint: i16, boost
     (if boost { duty.saturating_add(20).min(100) } else { duty }, error < -50)
 }
 
+/// Whether `bytes` is this function's export. Only the description's last line, "built by handwired-rs <version>",
+/// may differ from a fresh export, so a new release doesn't make the committed, signed example stale.
+fn is_this_export(bytes: &[u8]) -> bool {
+    let compiled = heater_circuit();
+    let fresh_bytes = compiled.export("heater");
+    let (Ok(given), Ok(fresh)) = (Program::parse(bytes), Program::parse(&fresh_bytes)) else {
+        return false;
+    };
+    let head = |description: &str| match description.rsplit_once('\n') {
+        Some((head, last)) if last.starts_with("built by handwired-rs ") => Some(head.to_string()),
+        _ => None,
+    };
+    head(given.description()).is_some()
+        && head(given.description()) == head(fresh.description())
+        && compiled.program.to_bytes(given.description()) == bytes
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -31,7 +48,7 @@ fn main() {
     let path = args.first().cloned().unwrap_or_else(|| "heater.hwc".into());
     let out = args.get(1).cloned().unwrap_or_else(|| format!("{path}.proof.json"));
     let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
-    assert!(bytes == heater_circuit().export("heater"), "{path} isn't what export_heater writes for this function");
+    assert!(is_this_export(&bytes), "{path} isn't what export_heater writes for this function");
 
     let program = Program::parse(&bytes).unwrap();
     let mut scratch = vec![0f32; program.scratch_len()];

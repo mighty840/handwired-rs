@@ -55,8 +55,7 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
       - name: The example program is what export_heater writes
         run: |
-          cargo run --release -p handwired-rs-run --example export_heater -- /tmp/heater.hwc
-          cmp /tmp/heater.hwc meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
+          cargo run --release -p handwired-rs-run --example export_heater -- --check meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
           files=meta-handwired/recipes-handwired/handwired-heater/files
           cargo run --release -p handwired-rs-sign --features std -- verify --key $files/example.pub $files/heater.hwc
           cargo run --release -p handwired-rs-sign --features log --example heater_report -- $files/heater.hwc /tmp/report.json
