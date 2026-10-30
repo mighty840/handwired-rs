@@ -367,6 +367,99 @@ fn saturating_arithmetic_on_64_bit_bytes_and_wide_sums() {
     }
 }
 
+/// `saturating_mul` on u32, i32, u64 and i64 values held as bytes.
+#[handwired]
+#[allow(clippy::needless_range_loop)]
+fn saturating_products(a: [u8; 8], b: [u8; 8]) -> ([u8; 4], [u8; 4], [u8; 8], [u8; 8]) {
+    let mut x = 0u64;
+    let mut y = 0u64;
+    for i in 0..8 {
+        x |= (a[i] as u64) << (8 * i);
+        y |= (b[i] as u64) << (8 * i);
+    }
+    let (small_x, small_y) = (x as u32, y as u32);
+    let unsigned = small_x.saturating_mul(small_y);
+    let signed = (small_x as i32).saturating_mul(small_y as i32) as u32;
+    let long = x.saturating_mul(y);
+    let signed_long = (x as i64).saturating_mul(y as i64) as u64;
+    let mut out = ([0u8; 4], [0u8; 4], [0u8; 8], [0u8; 8]);
+    for i in 0..4 {
+        out.0[i] = (unsigned >> (8 * i)) as u8;
+        out.1[i] = (signed >> (8 * i)) as u8;
+    }
+    for i in 0..8 {
+        out.2[i] = (long >> (8 * i)) as u8;
+        out.3[i] = (signed_long >> (8 * i)) as u8;
+    }
+    out
+}
+
+#[test]
+fn saturating_products_of_32_and_64_bit_bytes() {
+    let compiled = saturating_products_circuit();
+    assert_eq!(compiled.verify(3_000).unwrap().skipped, 0);
+    let edges = [
+        0u64,
+        1,
+        2,
+        3,
+        0xFFFF,
+        0x1_0000,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0xFFFF_FFFF,
+        0xFFFF_FFFE,
+        0x1_0000_0000,
+        0xB504_F333, // about the square root of 2^63
+        0xB504_F334,
+        i64::MAX as u64,
+        1 << 63,
+        u64::MAX,
+        u64::MAX - 1,
+        0xFFFF_FFFF_8000_0000, // i32::MIN as an i64, -2^31
+        0xFFFF_FFFF_4AFB_0CCD, // -0xB504_F333
+        0x0123_4567_89AB_CDEF,
+    ];
+    let mut records = Vec::new();
+    for &x in &edges {
+        for &y in &edges {
+            records.push((x.to_le_bytes(), y.to_le_bytes()));
+        }
+    }
+    let results = compiled.run_batch(&records).unwrap();
+    for (&(a, b), result) in records.iter().zip(&results) {
+        assert_eq!(*result, saturating_products(a, b), "{} {}", u64::from_le_bytes(a), u64::from_le_bytes(b));
+    }
+}
+
+/// `saturating_mul` on types of up to 16 bits: on one wire where the product stays within ±2^24, in bytes where it
+/// may not.
+#[handwired]
+#[allow(clippy::too_many_arguments)]
+fn saturating_small_products(a: u8, b: u8, c: i8, d: i8, e: u16, f: u16, g: i16, h: i16) -> (u8, i8, u16, i16) {
+    (a.saturating_mul(b), c.saturating_mul(d), e.saturating_mul(f), g.saturating_mul(h))
+}
+
+#[test]
+fn saturating_products_of_small_types() {
+    let compiled = saturating_small_products_circuit();
+    assert_eq!(compiled.verify(20_000).unwrap().skipped, 0);
+    let mut records = Vec::new();
+    for (a, c, e, g) in
+        [(0u8, 0i8, 0u16, 0i16), (1, 1, 1, 1), (2, -1, 255, -1), (15, 11, 256, 181), (16, -12, 257, 182)]
+    {
+        for (b, d, f, h) in [(255u8, i8::MIN, u16::MAX, i16::MIN), (17, i8::MAX, 255, i16::MAX), (16, -11, 256, -182)] {
+            records.push((a, b, c, d, e, f, g, h));
+        }
+    }
+    records.push((255, 255, i8::MIN, -1, u16::MAX, u16::MAX, i16::MIN, -1));
+    let results = compiled.run_batch(&records).unwrap();
+    for (&record, result) in records.iter().zip(&results) {
+        let (a, b, c, d, e, f, g, h) = record;
+        assert_eq!(*result, saturating_small_products(a, b, c, d, e, f, g, h), "{record:?}");
+    }
+}
+
 /// Division and remainder by constants and `abs` on wide values: byte digits for divisors up to 65,536, narrower digits
 /// above, powers of two as shifts and masks, signed values truncating toward zero; remainders and small quotients
 /// come back as one wire.

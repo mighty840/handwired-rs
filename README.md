@@ -81,7 +81,7 @@ locals;
 [Division](#division); f32 `/` by a power of two;
 integer `& | ^ !`, `<<` and `>>` by a constant or an input value (wrapping like Rust) and `count_ones()`, see
 [Bitwise operators](#bitwise-operators);
-`min max clamp abs wrapping_add/sub saturating_add/sub`; `as` casts between them (f32 → int truncates and saturates
+`min max clamp abs wrapping_add/sub saturating_add/sub/mul`; `as` casts between them (f32 → int truncates and saturates
 like Rust); `if`/`else` as a statement or value; `match` with literals, ranges, `|`, guards, tuples, bindings and
 consts; `for` over ranges or arrays that don't depend on the inputs (they unroll); `while`, `while let` and `loop`
 with `#[max_iterations(N)]`, see [Loops with a limit](#loops-with-a-limit); array reads and writes at computed
@@ -519,9 +519,9 @@ unspecified. `verify()` samples inputs (plus each range's ends); it is a test, n
   (`if let A = x && ...`), and calls to ordinary (non-`#[handwired]`) functions.
 - Integer types wider than 2^24 (`u32`, `i32`, `u64`, ...) need declared `#[range]`s on parameters, and parameters,
   results and plain `+ - *` stay within ±2^24, the integers f32 holds exactly; shifts, bitwise operators, rotates,
-  `wrapping_*` and `saturating_add`/`saturating_sub` go beyond as bytes. Divisors that may exceed 2^23 in magnitude
-  and `f32` casts of values that may leave ±2^24 aren't supported; each fails the build with a message. There's no
-  `saturating_mul`. `f32` parameters need `#[range]`s.
+  `wrapping_*` and `saturating_*` go beyond as bytes. Divisors that may exceed 2^23 in magnitude
+  and `f32` casts of values that may leave ±2^24 aren't supported; each fails the build with a message. `f32`
+  parameters need `#[range]`s.
 - An unannotated `let mut x = 0` defaults to `i32` where plain Rust would infer it from later use; annotate it.
 - A lowercase single-name call `foo(x)` is taken to be another `#[handwired]` function (`foo_hw`). Iterate arrays by
   value (`for x in arr`), not with `.iter()`.

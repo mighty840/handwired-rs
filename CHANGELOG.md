@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `saturating_mul` on integers. A product that stays within ±2^24 is one wire, clamped to the type's limits;
+  otherwise the operands' magnitudes are multiplied in bytes at twice the type's width, so the product can't wrap,
+  and where it passes a limit (2^(n-1) - 1 above zero, 2^(n-1) below, for signed n-bit types), that limit is the
+  result. Checked on every integer type from 8 to 64 bits at the edges and on sampled inputs.
 - Gradients on the GPU: `handwired_rs_gpu::GpuGradients` computes what `Compiled::gradients` does, one record per
   invocation, summed over the records on the CPU. It runs a `GradientTape` (`Circuit::gradient_tape(output,
   options)`, new in handwired-rs): the operations a gradient of the output reaches and those whose values its rules

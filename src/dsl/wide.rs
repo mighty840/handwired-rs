@@ -22,7 +22,7 @@
 use std::panic::Location;
 
 use super::bits::{integer_step, split};
-use super::ops::equality;
+use super::ops::{and, equality, or};
 use super::{Kind, Scalar, Val, known_bit, settle, width, with_circuit};
 use crate::circuit::{Circuit, OutOfRange};
 use crate::emit::emit_and;
@@ -270,13 +270,25 @@ pub(super) fn sub<T: Scalar>(a: &Limbs, b: &Limbs) -> Val<T> {
 
 /// `a * b`, wrapping: each column of byte products, then carries.
 pub(super) fn mul<T: Scalar>(a: &Limbs, b: &Limbs) -> Val<T> {
+    let forms = product_columns(a, b, a.count);
+    Val::from_limbs(Limbs::new(&carry_chain(forms, 0.0, true).0))
+}
+
+/// The product of two unsigned values in twice their bytes, so it can't wrap, least significant first. A column
+/// sums at most 8 byte products of 65,025 each, plus its carry, well within ±2^24.
+fn full_product(a: &Limbs, b: &Limbs) -> Vec<Wire> {
+    carry_chain(product_columns(a, b, 2 * a.count), 0.0, true).0
+}
+
+/// The sums of byte products in each of the product's first `columns` bytes, with their largest values.
+fn product_columns(a: &Limbs, b: &Limbs, columns: usize) -> Vec<(Lin, f64)> {
     let count = a.count;
-    let mut forms = Vec::with_capacity(count);
-    for column in 0..count {
+    let mut forms = Vec::with_capacity(columns);
+    for column in 0..columns {
         let mut terms = Vec::new();
         let mut bias = 0.0;
         let mut largest = 0.0;
-        for i in 0..=column {
+        for i in (column + 1).saturating_sub(count)..=column.min(count - 1) {
             let (x, y) = (a.wires[i], b.wires[column - i]);
             match (known(x), known(y)) {
                 (Some(p), Some(q)) => {
@@ -300,7 +312,41 @@ pub(super) fn mul<T: Scalar>(a: &Limbs, b: &Limbs) -> Val<T> {
         }
         forms.push((sum_form(&terms, bias), largest));
     }
-    Val::from_limbs(Limbs::new(&carry_chain(forms, 0.0, true).0))
+    forms
+}
+
+/// `a * b` held at `T`'s limits. The magnitudes are multiplied in twice the bytes; the product fits where its high
+/// half is 0 and its low half is at most the largest magnitude in the product's sign (2^(n-1) - 1 above zero and
+/// 2^(n-1) below, for n-bit signed types). Then the result is the product, and otherwise the limit it passed.
+pub(super) fn saturating_mul<T: Scalar>(a: &Limbs, b: &Limbs) -> Val<T> {
+    let count = a.count;
+    let zero = constant_limbs::<T>(0);
+    if !signed::<T>() {
+        let full = full_product(a, b);
+        let fits = equal(&Limbs::new(&full[count..]), &zero);
+        return select::<T>(fits, &constant_limbs::<T>(-1), &Limbs::new(&full[..count]));
+    }
+    let top_bit = |limbs: &Limbs| {
+        with_circuit(|circuit| {
+            integer_step(circuit, &Lin::new(vec![(limbs.wires[count - 1], 1.0)], 0.0), 128.0, true, None)
+        })
+    };
+    let magnitude = |limbs: &Limbs, negative: Val<bool>| {
+        let negated = sub::<T>(&zero, limbs).wide.unwrap();
+        select::<T>(negative, limbs, &negated).wide.unwrap()
+    };
+    let (a_negative, b_negative) = (top_bit(a), top_bit(b));
+    let full = full_product(&magnitude(a, a_negative), &magnitude(b, b_negative));
+    let low = Limbs::new(&full[..count]);
+    let negative = equality(a_negative.wire(), b_negative.wire(), false);
+    let min = constant_limbs::<T>(-(1i128 << (8 * count - 1)));
+    let max = constant_limbs::<T>((1i128 << (8 * count - 1)) - 1);
+    // Below 2^(n-1), or exactly 2^(n-1) for a negative product.
+    let in_sign = or(!top_bit(&low), || and(negative, || equal(&low, &min)));
+    let fits = and(equal(&Limbs::new(&full[count..]), &zero), || in_sign);
+    let product = select::<T>(negative, &low, &sub::<T>(&zero, &low).wide.unwrap()).wide.unwrap();
+    let limit = select::<T>(negative, &max, &min).wide.unwrap();
+    select::<T>(fits, &limit, &product)
 }
 
 /// `!a`: every bit flipped, 255 minus each byte.

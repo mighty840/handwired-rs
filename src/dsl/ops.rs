@@ -603,6 +603,24 @@ impl<T: Num> Val<T> {
         }
     }
 
+    /// Integers only: `self * other` held at the type's limits. A product that may leave ±2^24 is multiplied in bytes
+    /// at twice the type's width, so it can't wrap, and where it passes a limit, that limit is the result.
+    #[track_caller]
+    pub fn saturating_mul(self, other: impl super::Conv<Val<T>>) -> Val<T> {
+        let other = other.conv();
+        let bounds = |left: crate::numeric::Range, right: crate::numeric::Range| {
+            let corners = [left.min * right.min, left.min * right.max, left.max * right.min, left.max * right.max];
+            (corners.into_iter().fold(f64::INFINITY, f64::min), corners.into_iter().fold(f64::NEG_INFINITY, f64::max))
+        };
+        match self.saturating_in_bytes(other, bounds) {
+            Some((a, b)) => {
+                let product: Val<T> = wide::saturating_mul(&a, &b);
+                if is_wide::<T>() { product } else { wide::narrow(&product.wide.unwrap()) }
+            }
+            None => self.saturate(self * other),
+        }
+    }
+
     /// The operands as bytes when a saturating operation needs them: when either is held as bytes, or when the
     /// exact result, bounded by `bounds` over the operands' ranges, may leave ±2^24. Otherwise one wire holds the
     /// result exactly and a clamp saturates it.
