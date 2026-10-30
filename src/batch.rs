@@ -11,7 +11,7 @@
 
 use crate::circuit::{OutOfRange, resolve_index_position};
 use crate::numeric::{evaluate_boolean, relu32};
-use crate::tensor::{GatherCompute, GatherRead, TensorProgram, resolve_gather};
+use crate::tensor::{CandidatePositions, GatherCompute, GatherRead, TensorProgram, resolve_gather};
 
 /// Records evaluated together.
 pub const LANES: usize = 64;
@@ -38,7 +38,7 @@ struct IndexRead {
     index_row: usize,
     below: OutOfRange,
     above: OutOfRange,
-    candidate_positions: Vec<u32>,
+    candidate_positions: CandidatePositions,
 }
 
 /// Reusable buffers for running one program on batches of records.
@@ -192,7 +192,7 @@ impl<'program> BatchExecutor<'program> {
                     projection[read.row][lane] = match resolve_index_position(index, count, read.below, read.above) {
                         -2 => f32::NAN,
                         -1 => 0.0,
-                        position => values[read.candidate_positions[position as usize] as usize][lane],
+                        position => values[read.candidate_positions.get(position as usize) as usize][lane],
                     };
                 }
             }

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Index-read tables are stored as a base and a stride when their candidates sit at evenly spaced positions (a run of
+  cells, a reversed run, one repeated value), and otherwise as one list that every read of the same table shares;
+  ported from handwired. `IndexReadRow::candidate_positions` is now a `CandidatePositions` (`Strided` or `Listed`,
+  with `len`, `get`, `iter` and `to_vec`) instead of a `Vec<u32>`. Results and exported programs are unchanged: the
+  file format still lists every candidate's position.
 - `saturating_mul` on integers. A product that stays within ±2^24 is one wire, clamped to the type's limits;
   otherwise the operands' magnitudes are multiplied in bytes at twice the type's width, so the product can't wrap,
   and where it passes a limit (2^(n-1) - 1 above zero, 2^(n-1) below, for signed n-bit types), that limit is the

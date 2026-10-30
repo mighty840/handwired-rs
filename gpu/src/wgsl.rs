@@ -363,7 +363,7 @@ fn write(program: &TensorProgram, cuts: &BTreeSet<usize>) -> (Writer, usize) {
                 let constants: Option<Vec<f32>> = read
                     .candidate_positions
                     .iter()
-                    .map(|&candidate| match writer.values[candidate as usize] {
+                    .map(|candidate| match writer.values[candidate as usize] {
                         Some(Value::Constant(value)) => Some(value),
                         _ => None,
                     })
@@ -376,7 +376,7 @@ fn write(program: &TensorProgram, cuts: &BTreeSet<usize>) -> (Writer, usize) {
                     }
                     None => {
                         let names: Vec<String> =
-                            read.candidate_positions.iter().map(|&candidate| writer.name(candidate as usize)).collect();
+                            read.candidate_positions.iter().map(|candidate| writer.name(candidate as usize)).collect();
                         writer.line(format!("var c{position} = array<f32, {count}>({});", names.join(", ")));
                         format!("c{position}[{clamped}]")
                     }

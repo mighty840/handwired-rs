@@ -560,9 +560,9 @@ operands, while the forward values stay exact. `RelativeSurrogate { fraction }` 
 a threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gradient is zero everywhere. There's no
 export to a deep learning framework.
 
-**Not ported from handwired.** Index-read tables stored as a base and a stride, source-table cell declarations beyond
-the simplified ones, and its demos (HandwiredOS, the learned gallery, JSON search). The springs' end-to-end
-frame-trace tests (whole animations along 10–120 fps traces) aren't ported; their parts are.
+**Not ported from handwired.** Source-table cell declarations beyond the simplified ones, and its demos
+(HandwiredOS, the learned gallery, JSON search). The springs' end-to-end frame-trace tests (whole animations along
+10–120 fps traces) aren't ported; their parts are.
 
 ## License
 

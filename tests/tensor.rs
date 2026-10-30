@@ -79,3 +79,73 @@ fn layers_follow_dependency_depth() {
         assert_eq!(executor.run(&[value as f32]), &[if value > 4 { 10.0 } else { 12.0 }]);
     }
 }
+
+#[test]
+fn evenly_spaced_tables_store_a_base_and_a_stride() {
+    use handwired_rs::{CandidatePositions, OutOfRange};
+    // Ported from handwired's index-read test: other tables store positions shared by every read.
+    let count = 1024;
+    let mut circuit = Circuit::new(1 + count);
+    let index = circuit.source(0);
+    circuit.assume_range(index, 0.0, (count - 1) as f64);
+    let values: Vec<Wire> = (1..=count).map(|position| circuit.source(position)).collect();
+    for &wire in &values {
+        circuit.assume_range(wire, -1e6, 1e6);
+    }
+    let reversed_values: Vec<Wire> = values.iter().rev().copied().collect();
+    let every_other: Vec<Wire> = values.iter().copied().skip(1).step_by(2).collect();
+    let mut rng = Rng::new(3);
+    let mut shuffled = values.clone();
+    for position in (1..shuffled.len()).rev() {
+        shuffled.swap(position, rng.below(position + 1));
+    }
+    let contiguous = circuit.index_read(index, &values, OutOfRange::Clamp);
+    let reversed = circuit.index_read(index, &reversed_values, OutOfRange::Clamp);
+    let halves = circuit.index_read(index, &every_other, OutOfRange::Zero);
+    let repeated = circuit.index_read(index, &[values[5]; 3], OutOfRange::Clamp);
+    let scattered = circuit.index_read(index, &shuffled, OutOfRange::Clamp);
+    let next = circuit.affine(index + 1.0);
+    let scattered_next = circuit.index_read(next, &shuffled, OutOfRange::Zero);
+
+    let program = circuit.compile(Some(&[contiguous]));
+    assert_eq!(program.layers.len(), 1);
+    assert_eq!(
+        program.layers[0].index_reads[0].candidate_positions,
+        CandidatePositions::Strided { base: 1, stride: 1, count: count as u32 }
+    );
+    let roots = [contiguous, reversed, halves, repeated, scattered, scattered_next];
+    let program = circuit.compile(Some(&roots));
+    let read_of = |wire: Wire| {
+        let position = program.wire_order.iter().position(|&ordered| ordered == wire).unwrap() as u32;
+        let mut offset = circuit.source_size() as u32;
+        for layer in &program.layers {
+            if let Some(read) = layer.index_reads.iter().find(|read| offset + read.row == position) {
+                return read.candidate_positions.clone();
+            }
+            offset += layer.output_size as u32;
+        }
+        panic!("no index read for wire {}", wire.index());
+    };
+    assert_eq!(read_of(reversed), CandidatePositions::Strided { base: count as u32, stride: -1, count: count as u32 });
+    assert_eq!(read_of(halves), CandidatePositions::Strided { base: 2, stride: 2, count: count as u32 / 2 });
+    assert_eq!(read_of(repeated), CandidatePositions::Strided { base: 6, stride: 0, count: 3 });
+    let (CandidatePositions::Listed(first), CandidatePositions::Listed(second)) =
+        (read_of(scattered), read_of(scattered_next))
+    else {
+        panic!("a shuffled table is listed");
+    };
+    assert_eq!(first.len(), count);
+    assert!(std::sync::Arc::ptr_eq(&first, &second), "reads of one table share its positions");
+
+    // Both executors read every kind of table as the reference does, including past the ends.
+    let mut executor = TensorExecutor::new(&program);
+    for position in [0.0, 1.0, 511.0, 1022.0, 1023.0] {
+        let mut source = vec![position];
+        source.extend((0..count).map(|_| rng.below(2_000_001) as f32 - 1e6));
+        let reference = circuit.evaluate_reference(&source).unwrap();
+        let outputs = executor.run(&source).to_vec();
+        for (&root, &output) in roots.iter().zip(&outputs) {
+            assert_eq!(reference[root.index()].to_bits(), output.to_bits(), "index {position}, wire {}", root.index());
+        }
+    }
+}

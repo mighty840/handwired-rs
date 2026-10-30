@@ -65,7 +65,10 @@ pub use springs::{
     emit_apply_spring_matrix, emit_spring,
 };
 pub use tape::GradientTape;
-pub use tensor::{CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
+pub use tensor::{
+    CandidatePositions, CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer,
+    TensorProgram,
+};
 pub use wire::{Lin, Term, Wire};
 
 #[derive(Clone, Debug, PartialEq)]

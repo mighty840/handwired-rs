@@ -150,7 +150,7 @@ impl TensorProgram {
             for read in &layer.index_reads {
                 out.u32s(&[read.row, read.index_row, read.below_zero as u32 | (read.above_zero as u32) << 1]);
                 out.count(read.candidate_positions.len());
-                out.u32s(&read.candidate_positions);
+                out.u32s(&read.candidate_positions.to_vec());
             }
         }
         let checksum = program_checksum(&out.0);

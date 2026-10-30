@@ -9,6 +9,7 @@
 //! [`OneHotGroup`](crate::OneHotGroup)).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::Error;
 use crate::circuit::{Circuit, OpKind, OutOfRange, SourceRule, resolve_index_position};
@@ -23,7 +24,65 @@ pub struct IndexReadRow {
     pub below_zero: bool,
     pub above_zero: bool,
     /// Packed positions of the candidates.
-    pub candidate_positions: Vec<u32>,
+    pub candidate_positions: CandidatePositions,
+}
+
+/// Where an index read's candidates sit among the packed values. Evenly spaced candidates, e.g. a run of source
+/// cells, a reversed run or one repeated value, are a base and a stride and store no positions; others are listed,
+/// one position each, in one list that every read of the same table shares. Ported from handwired, where a
+/// 10,000-row list read into 24 slots stored no positions.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CandidatePositions {
+    /// Candidate k at `base + k × stride`.
+    Strided {
+        base: u32,
+        stride: i64,
+        count: u32,
+    },
+    Listed(Arc<[u32]>),
+}
+
+impl CandidatePositions {
+    /// A base and a stride where `positions` are evenly spaced, else the list.
+    pub fn pack(positions: &[u32]) -> CandidatePositions {
+        let base = positions[0];
+        let stride = positions.get(1).map_or(0, |&next| next as i64 - base as i64);
+        if positions.iter().enumerate().all(|(k, &position)| position as i64 == base as i64 + k as i64 * stride) {
+            CandidatePositions::Strided { base, stride, count: positions.len() as u32 }
+        } else {
+            CandidatePositions::Listed(positions.into())
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            CandidatePositions::Strided { count, .. } => *count as usize,
+            CandidatePositions::Listed(positions) => positions.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Candidate `k`'s packed position.
+    pub fn get(&self, k: usize) -> u32 {
+        match self {
+            CandidatePositions::Strided { base, stride, count } => {
+                assert!(k < *count as usize, "candidate {k} of {count}");
+                (*base as i64 + k as i64 * stride) as u32
+            }
+            CandidatePositions::Listed(positions) => positions[k],
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..self.len()).map(|k| self.get(k))
+    }
+
+    pub fn to_vec(&self) -> Vec<u32> {
+        self.iter().collect()
+    }
 }
 
 /// Resolves a one-hot group's selected position once per evaluation, at the
@@ -156,6 +215,7 @@ impl Circuit {
         let mut available = source_size;
         let mut layers = Vec::new();
         let mut slot_by_group: HashMap<usize, u32> = HashMap::new();
+        let mut positions_by_table: HashMap<usize, CandidatePositions> = HashMap::new();
         for operation_indices in operations_by_layer.iter().filter(|indices| !indices.is_empty()) {
             let output_size = operation_indices.len();
             let mut input_wires: Vec<Wire> = Vec::new();
@@ -251,15 +311,22 @@ impl Circuit {
                     index_row: index_row as u32,
                     below_zero: read.below == OutOfRange::Zero,
                     above_zero: read.above == OutOfRange::Zero,
-                    candidate_positions: self.tables[read.table]
-                        .candidates
-                        .iter()
-                        .map(|candidate| {
-                            let position = packed_by_wire[candidate.index()];
-                            assert!((position as usize) < available, "index read candidate is not available");
-                            position
+                    // Packed positions don't change from layer to layer, so one table's positions serve every read.
+                    candidate_positions: positions_by_table
+                        .entry(read.table)
+                        .or_insert_with(|| {
+                            let positions: Vec<u32> = self.tables[read.table]
+                                .candidates
+                                .iter()
+                                .map(|candidate| {
+                                    let position = packed_by_wire[candidate.index()];
+                                    assert!((position as usize) < available, "index read candidate is not available");
+                                    position
+                                })
+                                .collect();
+                            CandidatePositions::pack(&positions)
                         })
-                        .collect(),
+                        .clone(),
                 })
                 .collect();
             let mut row_offsets = Vec::with_capacity(projection_size + 1);
@@ -493,7 +560,7 @@ impl<'program> TensorExecutor<'program> {
                     match resolve_index_position(index, read.candidate_positions.len(), below, above) {
                         -2 => f32::NAN,
                         -1 => 0.0,
-                        position => values[read.candidate_positions[position as usize] as usize],
+                        position => values[read.candidate_positions.get(position as usize) as usize],
                     };
             }
             for (gate, &row) in layer.gate_rows.iter().enumerate() {
