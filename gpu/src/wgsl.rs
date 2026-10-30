@@ -130,6 +130,9 @@ struct Writer {
     /// The row that computes each position, and the last row that reads it (the row count for an output).
     defined_row: Vec<usize>,
     read_row: Vec<usize>,
+    /// For a loop's step: the shared cell each source position is, if any, so a table read over shared cells reads
+    /// the shared buffer instead of building an array.
+    shared: Option<Vec<Option<u32>>>,
 }
 
 impl Writer {
@@ -297,6 +300,17 @@ fn cuts(writer: &Writer, program: &TensorProgram, budget: usize) -> BTreeSet<usi
 
 /// Write every row's statements, starting a new stage at each row in `cuts`.
 fn write(program: &TensorProgram, cuts: &BTreeSet<usize>) -> (Writer, usize) {
+    write_with(program, cuts, Vec::new(), None)
+}
+
+/// [`write`], with constant tables already written, e.g. by earlier steps of a loop, and the shared cells of a loop's
+/// step.
+fn write_with(
+    program: &TensorProgram,
+    cuts: &BTreeSet<usize>,
+    tables: Vec<f32>,
+    shared: Option<Vec<Option<u32>>>,
+) -> (Writer, usize) {
     let source_size = program.source_size;
     let mut writer = Writer {
         stages: vec![Stage::default()],
@@ -304,13 +318,14 @@ fn write(program: &TensorProgram, cuts: &BTreeSet<usize>) -> (Writer, usize) {
         made_in: vec![usize::MAX; program.value_count],
         last_read: vec![0; program.value_count],
         gather_bits: BTreeMap::new(),
-        tables: Vec::new(),
+        tables,
         temporaries: 0,
         row: 0,
         statements: 0,
         row_statements: Vec::new(),
         defined_row: vec![usize::MAX; program.value_count],
         read_row: vec![0; program.value_count],
+        shared,
     };
     for position in 0..source_size {
         writer.values[position] = Some(Value::Source(position));
@@ -360,21 +375,37 @@ fn write(program: &TensorProgram, cuts: &BTreeSet<usize>) -> (Writer, usize) {
                 let slot = format!("p{position}");
                 writer.line(format!("let {slot}: i32 = i32(floor({index}));"));
                 let clamped = format!("clamp({slot}, 0i, {}i)", count - 1);
-                let constants: Option<Vec<f32>> = read
-                    .candidate_positions
-                    .iter()
-                    .map(|candidate| match writer.values[candidate as usize] {
-                        Some(Value::Constant(value)) => Some(value),
-                        _ => None,
-                    })
-                    .collect();
-                let mut value = match constants {
-                    Some(constants) => {
+                // A run of a loop's shared cells, e.g. a table that a pattern writes: one read of the shared buffer.
+                let strided = writer.shared.as_ref().and_then(|shared| {
+                    let cells: Option<Vec<i64>> = read
+                        .candidate_positions
+                        .iter()
+                        .map(|candidate| shared.get(candidate as usize).copied().flatten().map(i64::from))
+                        .collect();
+                    let cells = cells?;
+                    let stride = cells.get(1).map_or(0, |&next| next - cells[0]);
+                    let even = cells.iter().enumerate().all(|(k, &cell)| cell == cells[0] + k as i64 * stride);
+                    even.then_some((cells[0], stride))
+                });
+                let constants: Option<Vec<f32>> = if strided.is_some() {
+                    None
+                } else {
+                    read.candidate_positions
+                        .iter()
+                        .map(|candidate| match writer.values[candidate as usize] {
+                            Some(Value::Constant(value)) => Some(value),
+                            _ => None,
+                        })
+                        .collect()
+                };
+                let mut value = match (strided, constants) {
+                    (Some((base, stride)), _) => format!("shared_cells[u32({base}i + {clamped} * {stride}i)]"),
+                    (None, Some(constants)) => {
                         let offset = writer.tables.len();
                         writer.tables.extend(constants);
                         format!("tables[{offset}u + u32({clamped})]")
                     }
-                    None => {
+                    (None, None) => {
                         let names: Vec<String> =
                             read.candidate_positions.iter().map(|candidate| writer.name(candidate as usize)).collect();
                         writer.line(format!("var c{position} = array<f32, {count}>({});", names.join(", ")));
@@ -605,6 +636,28 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
         })
         .collect();
     Shader { stages, tables: writer.tables, carried, statements: total, source_size, output_count, operation_count }
+}
+
+/// One step of a loop program, written to run inside the loop's body.
+pub(crate) struct StepCode {
+    pub body: String,
+    /// Source positions the statements read as `s{position}`; shared cells that table reads use aren't among them.
+    pub sources: BTreeSet<usize>,
+    /// Each root's value, as an expression the epilogue can assign.
+    pub roots: Vec<String>,
+    pub statements: usize,
+    /// The constant tables so far, the ones passed in followed by this step's.
+    pub tables: Vec<f32>,
+}
+
+/// A step's statements as one shader body, whatever its length: a step is short, and runs once per position.
+/// `shared` is the shared cell each source position is, if any; `tables` the constant tables of earlier steps.
+pub(crate) fn emit_step(program: &TensorProgram, shared: Vec<Option<u32>>, tables: Vec<f32>) -> StepCode {
+    let (mut writer, _) = write_with(program, &BTreeSet::new(), tables, Some(shared));
+    assert_eq!(writer.stages.len(), 1, "a step is one stage");
+    let roots = program.roots.iter().map(|&root| writer.name(packed_position(program, root))).collect();
+    let stage = writer.stages.pop().unwrap();
+    StepCode { body: stage.body, sources: stage.sources, roots, statements: stage.statements, tables: writer.tables }
 }
 
 /// How a carried value packs, as its low end and bit width: where the circuit holds it to integers within a range of

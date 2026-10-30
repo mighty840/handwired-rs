@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Loop programs on the GPU (`handwired_rs_gpu::looped`), after handwired's: compiled steps that each run once per
+  position of a document, reading the document's cell there, registers carried from position to position, fields
+  that an earlier step wrote per position (bits packed 32 to a word), and shared cells. `GpuLoop` writes one shader
+  that runs each step inside a loop, so its length doesn't grow with the documents; table reads over a run of shared
+  cells read the shared buffer directly. Documents upload once (`upload`); `LoopProgram::cpu` runs the same program
+  with the CPU executor, for checking.
+- `json_search`, an example after handwired's JSON search demo: 100,000 generated JSON documents searched for regular
+  expressions, as three `#[handwired]` steps with the pattern's automaton as data, every count checked against a
+  matcher written from the definition of the search.
 - Tuple variants without their enum after `use Enum::*`, e.g. `Attack(d)`: the value takes its enum from where it
   goes (a result, an annotated `let`, an assignment, a field, an argument, the other branch of an `if` or `match`, the
   other side of `==`). `#[derive(HwType)]` implements `dsl::FromVariant` for each tuple variant, keyed by a hash of its

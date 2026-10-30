@@ -16,9 +16,11 @@
 //! ```
 
 pub mod gradients;
+pub mod looped;
 pub mod wgsl;
 
 pub use gradients::GpuGradients;
+pub use looped::{GpuLoop, LoopProgram};
 
 use std::fmt;
 use std::marker::PhantomData;

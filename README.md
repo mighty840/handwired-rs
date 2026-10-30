@@ -407,6 +407,21 @@ the function, runs a put/get/delete session through the circuit, and runs 100,00
 in one GPU dispatch (1,082 operations in 70 layers; 50 ms on the GPU and 60 ms with `run_batch` on 12 threads,
 against 6.6 ms for the plain function).
 
+`cargo run --release -p handwired-rs-gpu --example json_search` searches 100,000 generated JSON documents for
+regular expressions, after handwired's JSON search demo. The search is three `#[handwired]` functions, steps of 28,
+208 and 214 operations that run once per character: a tokenizer that tracks strings and escapes, a backward pass
+that finds from which states of the pattern's automaton an accepting state is still reachable, and a forward pass
+that counts every non-overlapping match, leftmost and then longest. A pattern, e.g. `(the|an?) [a-z]+`, is compiled
+on the host into an automaton of up to 8 states whose tables are data the steps read, so a new pattern writes cells
+and compiles nothing. The steps run as a `GpuLoop`: one shader of 975 statements that runs each step inside a loop
+over a document's 256 positions, carrying the automaton's state from position to position, so the shader is as long
+as the steps whatever the documents' length (written out per position, the same program would be about 115,000
+operations). The documents go to the GPU once; a search then takes about 60 ms on a Radeon 890M, against 85–105 ms
+for a plain Rust matcher on one thread, and every document's count equals that matcher's. Differences from
+handwired's demo: ASCII documents of up to 256 bytes where it reads 512 code points, one program of 8 states where
+it has three up to 32, and a string scope that doesn't tell keys from values, which its JSON highlighter does; no
+web page.
+
 `GpuGradients` runs the backward pass on the GPU: what `compiled.gradients` computes, one record per invocation,
 summed over the records on the CPU. The circuit becomes a `GradientTape` (`circuit.gradient_tape(output, options)`):
 the operations the gradient reaches and those whose values it reads, as flat arrays that one fixed shader interprets,
@@ -565,7 +580,7 @@ a threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gr
 export to a deep learning framework.
 
 **Not ported from handwired.** Source-table cell declarations beyond the simplified ones, and its demos
-(HandwiredOS, the learned gallery, JSON search).
+(HandwiredOS and the learned gallery; JSON search is an example, without its page or its JSON highlighter).
 
 ## License
 
@@ -618,6 +633,9 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   with the default stages and again split every 5 statements, so every kind of operation reads values carried from
   earlier stages; range checks on batches, and comparisons of subnormal values, checked against the
   flushing model when the GPU flushes them.
+- `gpu/tests/json_search.rs`: the JSON search example's loop program on 160 random patterns over quotes, escapes and
+  texts of 0 to 256 bytes, in both scopes, on the GPU, as the same loop on the CPU and as the steps' own Rust
+  functions, against a matcher written from the definition of the search; and its steps against their functions.
 - `gpu/tests/gradients.rs`: GPU gradients of a fight and of a table read against the CPU tape, record by record, bit for
   bit under exact rules and within 1e-4 under surrogates, in one dispatch and in small ones, and summed against
   `gradients_encoded`.
