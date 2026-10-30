@@ -479,6 +479,7 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
     let mut decode_variants = Vec::new();
     let mut sample_variants = Vec::new();
     let mut constructors = Vec::new();
+    let mut from_variants = Vec::new();
     let mut conversions = Vec::new();
     let mut native_equal = Vec::new();
     let mut circuit_equal = Vec::new();
@@ -541,6 +542,21 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                 #dsl::cells_equal(&left, &right)
             }
         });
+        if let Fields::Unnamed(_) = &data.variants[tag as usize].fields {
+            // `Attack(d)` written without its enum, after `use Action::*`.
+            let hash = proc_macro2::Literal::u64_suffixed(crate::variant_hash(&ident.to_string()));
+            let positions = (0..fields.len()).map(syn::Index::from);
+            from_variants.push(quote! {
+                impl #dsl::FromVariant<#hash> for #hw_name {
+                    type Fields = (#(<#field_types as #dsl::HwType>::Val,)*);
+                    fn from_variant(fields: Self::Fields) -> #hw_name {
+                        let mut value = #hw_name::#new();
+                        #(value.#fields = fields.#positions;)*
+                        value
+                    }
+                }
+            });
+        }
         conversions.push(quote! {
             #bind => {
                 let mut value = #hw_name::#new();
@@ -657,6 +673,8 @@ fn expand_data_enum(input: &DeriveInput, data: &syn::DataEnum) -> syn::Result<To
                     }
                 }
             }
+
+            #(#from_variants)*
 
             impl #dsl::Native for #hw_name {
                 type Of = #name;

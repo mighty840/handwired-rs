@@ -37,8 +37,8 @@ pub use compiled::{
     iteration_limit, sample_variant,
 };
 pub use control::{
-    Branch, CastTo, Cond, Conv, Elem, IfElse, Lift, Mux, Native, Placeholder, StoreElem, Unify, cast, choose, if_else,
-    index, placeholder, store, unsupported,
+    Branch, CastTo, Cond, Conv, Elem, FromVariant, IfElse, Lift, Mux, Native, Placeholder, StoreElem, Unify, Variant,
+    cast, choose, if_else, index, placeholder, store, unsupported,
 };
 /// `#[derive(HwType)]` on a struct with named fields; see the macros crate.
 pub use handwired_rs_macros::HwType;

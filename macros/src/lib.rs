@@ -31,6 +31,12 @@ use syn::{
 mod derive;
 mod loops;
 
+/// FNV-1a of a variant's name: the key of its `dsl::FromVariant` impl, which the derive writes and a variant
+/// written without its enum names.
+fn variant_hash(name: &str) -> u64 {
+    name.bytes().fold(0xCBF2_9CE4_8422_2325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x0100_0000_01B3))
+}
+
 /// `#[derive(HwType)]`: a struct with named fields of scalars, arrays and other derived structs as a `#[handwired]`
 /// parameter, local or result. It adds `<Name>Hw`, the struct's circuit form, which `#[handwired]` code builds from
 /// `Name { ... }` literals. Fields take `#[range(lo, hi)]`, `#[ranges([...])]` and `#[grid(step)]`. The struct also
@@ -831,11 +837,19 @@ impl Rewriter {
                 }
             }
         } else if path.segments.len() < 2 {
-            return self.error(
-                span,
-                "name a variant with data by its enum in #[handwired] functions, e.g. `Shape::Rect(w, h)`, or this is \
-                 a tuple struct, which isn't supported",
-            );
+            // `Attack(d)` after `use Action::*`: the `FromVariant` impl for the name of the enum the value goes to.
+            let hash = proc_macro2::Literal::u64_suffixed(variant_hash(&name));
+            let values: Vec<Tokens> =
+                fields.iter().map(|(_, field)| self.converted(field, Some(&inferred()))).collect();
+            return match expected {
+                Some(ty) if !is_inferred(Some(ty)) => quote_spanned!(span=>
+                    <<#ty as ::handwired_rs::dsl::HwType>::Val as ::handwired_rs::dsl::FromVariant<#hash>>::from_variant(
+                        (#(#values,)*)
+                    )
+                ),
+                // Where the macro can't name the type: a value that becomes the enum where it goes.
+                _ => quote_spanned!(span=> ::handwired_rs::dsl::Variant::<#hash, _>((#(#values,)*))),
+            };
         } else {
             let mut enum_path = path.clone();
             enum_path.segments.pop();

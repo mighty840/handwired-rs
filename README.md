@@ -253,8 +253,11 @@ comparison of the index. `==` and `!=` compare the variant and, for variants wit
 `>=`, `min`, `max` and `clamp` order values as Rust derives it, by variant in declaration order and then field by field
 (`None` before `Some`, `Ok` before `Err`), one comparison pair per cell. `Option` values have `is_some`, `is_none`, `unwrap_or`, `unwrap` and `expect` (the last
 two give an unspecified value for `None`, where Rust panics). The derive adds `ActionHw`, the circuit form.
-Constructors name the variant by its enum, `Action::Attack(d)` or `Action::Move { dx, dy: 0 }`, since the macro can't
-tell which enum a bare `Attack(d)` after `use Action::*` belongs to (bare unit variants work, as in patterns). `Some(x)`
+After `use Action::*`, a tuple variant needs no enum either, `Attack(d)`: it takes its enum from where it goes (a result,
+an annotated `let`, an assigned variable, a field, an argument, the other branch of an `if` or `match`, the other side
+of `==`), and where nothing says, e.g. `let x = Attack(3);`, it needs an annotation. Unit variants work bare as in
+patterns, but a variant with named fields needs its enum, `Action::Move { dx, dy: 0 }`, since bare it reads like a
+struct. `Some(x)`
 takes its type from where it goes (an annotated `let`, a result, an assigned variable, a field), else from `x`, so a literal may
 need a suffix, `Some(3u8)`, and `let mut x = None` needs an annotation.
 

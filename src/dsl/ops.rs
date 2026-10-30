@@ -8,6 +8,7 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Sub};
 use std::panic::Location;
 
+use super::control::{FromVariant, Variant};
 use super::wide::{self, Limbs};
 use super::{Kind, Num, Scalar, Val, is_wide, known_bit, settle, with_circuit};
 use crate::circuit::{Circuit, OutOfRange};
@@ -715,6 +716,26 @@ pub trait Cmp<Right> {
     type Output;
     fn compare(self, relation: Relation, right: Right) -> Self::Output;
     fn equal(self, right: Right, equal: bool) -> Self::Output;
+}
+
+// A variant written without its enum, compared with a value of the enum on either side.
+impl<const NAME: u64, F, T: FromVariant<NAME, Fields = F> + Cmp<T>> Cmp<Variant<NAME, F>> for T {
+    type Output = T::Output;
+    fn compare(self, relation: Relation, right: Variant<NAME, F>) -> T::Output {
+        self.compare(relation, T::from_variant(right.0))
+    }
+    fn equal(self, right: Variant<NAME, F>, equal: bool) -> T::Output {
+        self.equal(T::from_variant(right.0), equal)
+    }
+}
+impl<const NAME: u64, F, T: FromVariant<NAME, Fields = F> + Cmp<T>> Cmp<T> for Variant<NAME, F> {
+    type Output = T::Output;
+    fn compare(self, relation: Relation, right: T) -> T::Output {
+        T::from_variant(self.0).compare(relation, right)
+    }
+    fn equal(self, right: T, equal: bool) -> T::Output {
+        T::from_variant(self.0).equal(right, equal)
+    }
 }
 
 fn compare_wires(left: Wire, relation: Relation, right: Wire) -> Val<bool> {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Tuple variants without their enum after `use Enum::*`, e.g. `Attack(d)`: the value takes its enum from where it
+  goes (a result, an annotated `let`, an assignment, a field, an argument, the other branch of an `if` or `match`, the
+  other side of `==`). `#[derive(HwType)]` implements `dsl::FromVariant` for each tuple variant, keyed by a hash of its
+  name, and a bare variant whose enum the macro can't name is a `dsl::Variant`, which converts to the enum it meets.
+  Struct-like variants still need their enum, since bare they read like a struct; patterns took bare names already.
+  The derive's output changed, so this needs handwired-rs-macros and handwired-rs together.
 - The springs' end-to-end frame-trace tests, ported from handwired: a two-object app with presses and jumps along
   10, 30, 60 and 120 fps frame times and 500 ms and 3 s stalls, against float64 springs and ui.md's order, also near
   65,536 to 1,048,576 px. Every assertion holds as in handwired, on the same presses.

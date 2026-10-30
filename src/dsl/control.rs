@@ -139,6 +139,43 @@ impl<A: Conv<B>, B, const N: usize> Conv<[B; N]> for [A; N] {
     }
 }
 
+/// A variant with data written without its enum, e.g. `Attack(d)` after `use Action::*`. `#[derive(HwType)]`
+/// implements it for each tuple variant, keyed by a hash of the variant's name, so the enum, and with it the
+/// fields' types, comes from where the value goes, as `Default::default()`'s type does.
+pub trait FromVariant<const NAME: u64>: Sized {
+    type Fields;
+    fn from_variant(fields: Self::Fields) -> Self;
+}
+
+/// A variant written without its enum, before its enum is known: it becomes the enum's circuit form where a value
+/// of the enum is expected, e.g. assigned to a variable, a struct field or a function's result, or beside the
+/// enum in the other branch of an `if` or `match`.
+pub struct Variant<const NAME: u64, F>(pub F);
+
+impl<const NAME: u64, F, T: FromVariant<NAME, Fields = F>> Conv<T> for Variant<NAME, F> {
+    fn conv(self) -> T {
+        T::from_variant(self.0)
+    }
+}
+impl<const NAME: u64, F, T: FromVariant<NAME, Fields = F>> Unify<T> for Variant<NAME, F> {
+    type Out = T;
+    fn left(self) -> T {
+        T::from_variant(self.0)
+    }
+    fn right(other: T) -> T {
+        other
+    }
+}
+impl<const NAME: u64, F, T: FromVariant<NAME, Fields = F>> Unify<Variant<NAME, F>> for T {
+    type Out = T;
+    fn left(self) -> T {
+        self
+    }
+    fn right(other: Variant<NAME, F>) -> T {
+        T::from_variant(other.0)
+    }
+}
+
 /// The circuit form of a value whose type is not known yet, for `let mut`
 /// bindings that later take circuit values.
 pub trait Lift {
