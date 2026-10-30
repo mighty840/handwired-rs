@@ -17,7 +17,7 @@ cargo add handwired-rs-gpu        # optional: run compiled programs on a GPU thr
 cargo add handwired-rs-run        # optional: run exported programs anywhere, no_std, without handwired-rs
 ```
 
-**Status:** 0.8, experimental, checked by the tests listed below on one machine and in CI. Read
+**Status:** 0.9, experimental, checked by the tests listed below on one machine and in CI. Read
 [Limitations](#limitations) before relying on it.
 
 ```rust
