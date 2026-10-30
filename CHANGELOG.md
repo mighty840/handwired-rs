@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.1 (unreleased): handwired-rs 0.8.1
+## 0.8.1 (2026-10-30): handwired-rs 0.8.1
 
 - Fixed: a source declared on a grid with a range past 2^24 grid steps of 0, e.g. `assume_range(a, 0.0, 16_777_218.0)`
   with `assume_grid(a, 1.0)`, was accepted, although FP32 can't hold every value of that grid there (16,777,217
