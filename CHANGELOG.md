@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `learned_gallery`, an example after handwired's learned gallery demo: a network whose 244 weights are the program's
+  source cells, trained with Adam through `backpropagate_reference` until one rectangle per photo matches a sketch,
+  with a penalty that pulls nearly aligned photo edges onto one line and frames taken back when they raise the loss.
+  The three preset sketches come to rest as the demo's do.
+
 ## 0.9.0 (2026-10-30): handwired-rs and handwired-rs-gpu 0.9.0, handwired-rs-macros 0.6.0, handwired-rs-run and handwired-rs-sign 0.1.0
 
 - Loop programs on the GPU (`handwired_rs_gpu::looped`), after handwired's: compiled steps that each run once per

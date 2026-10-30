@@ -53,6 +53,8 @@ jobs:
         run: cargo run --release --example balance
       - name: Run SHA-1 against sha1_smol
         run: cargo run --release --example sha1
+      - name: Run the learned gallery example
+        run: cargo run --release --example learned_gallery
 
   lint:
     name: Format and clippy

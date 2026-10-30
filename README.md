@@ -358,7 +358,7 @@ time in proportion to how many cross, and an integer within a small range crosse
 packed into 32-bit words with others (roughly 30% faster for the wide hash below, 20% for a bit-heavy XOR, whose ReLU
 ramps mostly have ranges too loose to pack). On RADV, that 8,400-statement program, a 1,131-operation wide hash, becomes 6
 stages that set up in 0.47 s and run 262,144 records in about 62 ms, against 32 ms as one shader (in stages of 250:
-0.09 s and 120 ms). SHA-1 (68,036 operations, about 460,000 statements, [below](#two-larger-examples)) becomes 1,240
+0.09 s and 120 ms). SHA-1 (68,036 operations, about 460,000 statements, [below](#three-larger-examples)) becomes 1,240
 stages of about 250 that set up in 8–17 s depending on load, and hashes the 2,000 messages in 0.3–0.5 s, measured
 with a GPU copy of the example. Mesa also caches compiled shaders on disk, so setting up the same program
 again is faster (2.6 s for SHA-1). `GpuBatch::staged` and `GpuProgram::from_program_staged` take another stage size:
@@ -462,7 +462,7 @@ slot it is loaded into, with a release number it can use to refuse older program
 log of every program presented, installed or refused. It is `no_std` and allocation-free, and the program files and
 the runner don't change.
 
-## Two larger examples
+## Three larger examples
 
 **SHA-1, ported from a library and checked against it.** `cargo run --release --example sha1` ports `sha1_smol`'s
 block function (`Sha1State::process` and the intrinsic emulations it calls, function for function, under its BSD
@@ -487,6 +487,23 @@ The rates are counted on 20,000 fights per matchup that the tuning never saw. Gr
 moves smoothly with the stats: in a first version, where units died mid-fight, most Archer–Mage fights ended with both
 dead, a margin of exactly 0 with no gradient, and the tuning stalled at 58%. Win rates also move in steps of a few
 points, since fights with the same hits change winner together, so about ±1% is as close as it gets.
+
+**A photo layout learned through the circuit.** `cargo run --release --example learned_gallery` ports the network and
+training of handwired's learned gallery demo: a network of 6,320 operations in 8 layers outputs one rectangle per
+photo, and its 244 weights are the program's source cells, trained with Adam on gradients from
+`backpropagate_reference` until the rectangles match a sketch. A second part of the loss pulls photo edges that are
+nearly on one line onto one line, with the method of multipliers, and frames whose steps raise the loss are taken
+back. The three preset sketches come to rest the way the demo's do (frames of 10 steps, px on a 538 by 430 stage):
+
+| | photos | steps to rest | largest error | widest line of photos |
+| --- | --- | --- | --- | --- |
+| Story | 10 | 740 | 0.20% of the stage | 0.005 px |
+| Cinema | 9 | 1,320 | 0.11% | 0.110 px |
+| Contact sheet | 11 | 910 | 0.01% | 0.039 px |
+
+A rectangle of a row nudged 15 px down keeps its photo in the row, 11.3 px above the rectangle, and one nudged 28 px,
+past the 21.5 px at which a photo lets go, gets its photo on the rectangle. The demo's pointer editor and page aren't
+ported.
 
 ## What's ported
 
@@ -579,8 +596,9 @@ operands, while the forward values stay exact. `RelativeSurrogate { fraction }` 
 a threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gradient is zero everywhere. There's no
 export to a deep learning framework.
 
-**Not ported from handwired.** Source-table cell declarations beyond the simplified ones, and its demos
-(HandwiredOS and the learned gallery; JSON search is an example, without its page or its JSON highlighter).
+**Not ported from handwired.** Source-table cell declarations beyond the simplified ones, and its HandwiredOS demo.
+JSON search and the learned gallery are examples, without their pages, JSON search without its JSON highlighter and the
+learned gallery without its pointer editor.
 
 ## License
 
@@ -627,6 +645,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   in nested loops), each verified against its own function.
 - `tests/toggle.rs`: handwired's toggle-switch template (without its spring), compared frame by frame with the same
   switch in plain Rust, over a scripted trace and random traces near the track edges.
+- `tests/learned_gallery.rs`: the learned gallery example, ported from handwired's tests: the program's size against
+  handwired's and its compiled form against the reference, the penalty's pull against the slope of its cost, fits of
+  the presets, of a sidebar grid in scattered slots and of a masonry layout, frames that raise the loss taken back,
+  edges pulled onto a line within the reach and left beyond it, and a nudged photo that holds its row or lets go.
 
 - `gpu/tests/exact.rs`: random circuits, comparisons at their edges, gathers over one-hot groups, selection trees and
   `#[handwired]` batches on the GPU, compared bit for bit with the CPU reference (skipped without an adapter), each run
