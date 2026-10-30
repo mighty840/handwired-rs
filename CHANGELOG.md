@@ -30,14 +30,43 @@
   after checking each at build time, an example program, and runtime tests for `testimage`. CI builds
   `core-image-minimal` and tests it under QEMU. handwired-rs-run supports Rust 1.75 (edition 2021), and the workspace
   uses resolver 2 and a version 3 lockfile so its packages stay readable by older Cargo.
+  - Signed programs: name trusted public keys in `HANDWIRED_TRUSTED_KEYS` and the build fails unless every program
+    is signed by one of them (a `handwired-sign` recipe, also native). Signatures are installed beside the programs
+    and listed in the manifest, and the keys under `/etc/handwired/trusted`.
+  - Proof reports: a program's `PROGRAM.proof.json`, named in `HANDWIRED_REPORTS`, is checked at build time to name
+    the program's SHA-256, installed beside it and listed in the manifest. The image's SPDX documents list the report
+    with its hash, and the recipe's carries the annotation `HANDWIRED_REPORTS=...` that pairs it with its program.
+  - The runtime tests run the example program, check that out-of-range and off-grid inputs are refused, compare the
+    manifest with the installed files, verify the signature, admit the program through a version log that refuses
+    and logs a changed copy, and check that the installed report names the program.
+- New crate handwired-rs-sign 0.1.0: Ed25519 signatures for program files, in a `.sig` file beside each program, so
+  the program's bytes and SHA-256 don't change. A signature covers a slot name and a release number with the
+  program, and `verify` returns which key, slot and release it was, so a device can refuse a program meant for
+  another slot or older than the one it runs. `no_std`, no allocation, no `unsafe`; one dependency
+  (`ed25519-compact`), itself dependency-free. With `std`, the `handwired-sign` command makes keys, signs, verifies
+  and shows signatures. Feature `log` (on with `std`) adds a hash-chained version log: `admit` decides whether a
+  program may be installed in a slot (trusted key, right slot, release not below the installed one, and not the
+  installed release with other bytes) and records every decision, installed or refused; `check` verifies the chain.
+  The pinned signature and log are cross-checked against independent Ed25519 and SHA-256 implementations in CI.
+- Proof reports: a JSON format, documented in handwired-rs-sign's README, recording what was proved about a program
+  file (exhaustive runs, equivalence, range certificates, properties, multi-cycle properties), bound to the file by
+  its SHA-256, with each solver query's path, hash and verdict and what the proof assumes or doesn't cover.
+  `sign/examples/heater_report.rs` writes the example program's report: all 85,852 accepted inputs, run and
+  compared bit for bit with its Rust function.
+- handwired-rs-run refuses a gather read with more than 2^24 candidates at load, as it already did index reads. One
+  of 2^31 or more used to pass `parse` and then panic in `run`; such a file is over 8 GiB, so no real program was affected.
+  `run/src/proofs.rs` holds Kani proofs, compiled only under Kani, so the runner doesn't change: the numeric helpers
+  do what their comments say for every f32 or f64, `parse` doesn't panic on any file of up to 96 bytes, and `run`
+  doesn't panic, or read out of bounds, on any program of one shape that `parse` accepts (one layer with every
+  kind of operation). `run/kani.sh` runs them; CI runs the helpers' proofs.
 - New crate handwired-rs-run 0.1.0: runs exported programs without handwired-rs. It is `no_std`, with no allocation,
   dependencies or `unsafe`, and builds for Cortex-M0, Cortex-M4F/M7 and RV32IMC. It is bit-exact with
   `TensorExecutor` on every value. It refuses inputs outside the declared ranges, and refuses damaged bytes at load
   (checksum, then structure), so a run never reads out of bounds. With `std`, the `handwired-run` command runs a
   program over records on standard input.
-- `Compiled::export(name)` and `TensorProgram::to_bytes(description)` write programs in that format (version 1,
-  described in `handwired_rs::export`): the source cells' declared ranges, the outputs' positions and the layers,
-  with a checksum.
+- `Compiled::export(name)` and `TensorProgram::to_bytes(description)` write programs in that format (described in
+  `handwired_rs::export`; version 3 since the change above): the source cells' declared ranges, the outputs'
+  positions and the layers, with a checksum.
 - `saturating_add` and `saturating_sub` on values held as bytes, and on one-wire values whose result may leave
   ±2^24: the wrapping result in bytes, or the limit it passed where it wrapped, found by comparing it with the left
   operand. They used to fail the build. Narrow circuits are unchanged.
