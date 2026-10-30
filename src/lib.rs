@@ -40,6 +40,7 @@ mod inline;
 mod numeric;
 mod prefix;
 mod springs;
+pub mod tape;
 mod tensor;
 pub mod timing;
 mod wire;
@@ -63,6 +64,7 @@ pub use springs::{
     AnimatedObject, AnimatedObjectOptions, AnimatedSpring, SpringMatrixWires, SpringState, emit_animated_object,
     emit_apply_spring_matrix, emit_spring,
 };
+pub use tape::GradientTape;
 pub use tensor::{CompileOptions, GatherCompute, GatherRead, IndexReadRow, TensorExecutor, TensorLayer, TensorProgram};
 pub use wire::{Lin, Term, Wire};
 

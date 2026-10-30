@@ -15,7 +15,10 @@
 //! assert_eq!(results, vec![12, 10, 10]);
 //! ```
 
+pub mod gradients;
 pub mod wgsl;
+
+pub use gradients::GpuGradients;
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -31,6 +34,8 @@ pub enum GpuError {
     Shader(String),
     Input(String),
     Map(String),
+    /// A gradient rule rejects an operation the gradient can reach.
+    Gradient(handwired_rs::Error),
 }
 
 impl fmt::Display for GpuError {
@@ -41,6 +46,7 @@ impl fmt::Display for GpuError {
             GpuError::Shader(message) => write!(formatter, "shader: {message}"),
             GpuError::Input(message) => write!(formatter, "input: {message}"),
             GpuError::Map(message) => write!(formatter, "reading results: {message}"),
+            GpuError::Gradient(error) => write!(formatter, "gradient: {error}"),
         }
     }
 }
@@ -301,21 +307,43 @@ impl GpuProgram {
         }
         encoder.copy_buffer_to_buffer(&outputs, 0, &readback, 0, output_size);
         gpu.queue.submit([encoder.finish()]);
-
-        let slice = readback.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        device.poll(wgpu::PollType::Wait).map_err(|error| GpuError::Map(error.to_string()))?;
-        receiver
-            .recv()
-            .map_err(|error| GpuError::Map(error.to_string()))?
-            .map_err(|error| GpuError::Map(error.to_string()))?;
-        let values = bytemuck::cast_slice::<u8, f32>(&slice.get_mapped_range()).to_vec();
-        readback.unmap();
-        Ok(values)
+        read_back(gpu, &readback)
     }
+}
+
+/// Wait for the submitted work and read a mappable buffer's f32s.
+fn read_back(gpu: &Gpu, readback: &wgpu::Buffer) -> Result<Vec<f32>, GpuError> {
+    let slice = readback.slice(..);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    gpu.device.poll(wgpu::PollType::Wait).map_err(|error| GpuError::Map(error.to_string()))?;
+    receiver
+        .recv()
+        .map_err(|error| GpuError::Map(error.to_string()))?
+        .map_err(|error| GpuError::Map(error.to_string()))?;
+    let values = bytemuck::cast_slice::<u8, f32>(&slice.get_mapped_range()).to_vec();
+    readback.unmap();
+    Ok(values)
+}
+
+/// The source tables for `records`, checked against the declared ranges.
+fn encode_checked<Args: Params>(records: &[Args], source_ranges: &[Range]) -> Result<Vec<f32>, GpuError> {
+    let mut sources = Vec::with_capacity(records.len() * Args::CELLS);
+    for (record_index, record) in records.iter().enumerate() {
+        record.encode(&mut sources);
+        let start = record_index * Args::CELLS;
+        for (cell, (&value, range)) in sources[start..].iter().zip(source_ranges).enumerate() {
+            if !(value as f64 >= range.min && value as f64 <= range.max) {
+                return Err(GpuError::Input(format!(
+                    "record {record_index}: source cell {cell} is {value}, outside its declared range {}..{}",
+                    range.min, range.max
+                )));
+            }
+        }
+    }
+    Ok(sources)
 }
 
 /// A `#[handwired]` function's circuit on the GPU, run on typed arguments.
@@ -345,20 +373,7 @@ impl<Args: Params, R: HwType> GpuBatch<Args, R> {
 
     /// The source tables for `records`, checked against the declared ranges.
     pub fn encode(&self, records: &[Args]) -> Result<Vec<f32>, GpuError> {
-        let mut sources = Vec::with_capacity(records.len() * Args::CELLS);
-        for (record_index, record) in records.iter().enumerate() {
-            record.encode(&mut sources);
-            let start = record_index * Args::CELLS;
-            for (cell, (&value, range)) in sources[start..].iter().zip(&self.source_ranges).enumerate() {
-                if !(value as f64 >= range.min && value as f64 <= range.max) {
-                    return Err(GpuError::Input(format!(
-                        "record {record_index}: source cell {cell} is {value}, outside its declared range {}..{}",
-                        range.min, range.max
-                    )));
-                }
-            }
-        }
-        Ok(sources)
+        encode_checked(records, &self.source_ranges)
     }
 
     pub fn run(&self, gpu: &Gpu, records: &[Args]) -> Result<Vec<R>, GpuError> {

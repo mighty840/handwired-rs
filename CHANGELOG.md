@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Gradients on the GPU: `handwired_rs_gpu::GpuGradients` computes what `Compiled::gradients` does, one record per
+  invocation, summed over the records on the CPU. It runs a `GradientTape` (`Circuit::gradient_tape(output,
+  options)`, new in handwired-rs): the operations a gradient of the output reaches and those whose values its rules
+  read, as flat arrays, which one fixed shader interprets, so no shader is compiled per program. Each record's
+  gradients are the CPU reference's bit for bit, except a comparison's surrogate slope and an index read's backward
+  difference, which the GPU computes in f32. A rule that rejects an operation the gradient can reach is an error
+  when the tape is made (`GpuError::Gradient`, a new variant), not when a record reaches it. Not faster than the
+  CPU for small circuits: 200,000 fights of 122 operations take 33 ms on a Radeon 890M and 21 ms on 24 CPU threads.
 - Program format version 3 carries what an input must be beyond its range, and handwired-rs-run refuses inputs that
   aren't an encoding of a value the function takes. Such inputs used to run and give results the function never could
   (a vending machine's state tag of 0.5 gave a credit of 75), since a circuit is only exact on its function's values.

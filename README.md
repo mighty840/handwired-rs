@@ -403,6 +403,20 @@ the function, runs a put/get/delete session through the circuit, and runs 100,00
 in one GPU dispatch (1,082 operations in 70 layers; 50 ms on the GPU and 60 ms with `run_batch` on 12 threads,
 against 6.6 ms for the plain function).
 
+`GpuGradients` runs the backward pass on the GPU: what `compiled.gradients` computes, one record per invocation,
+summed over the records on the CPU. The circuit becomes a `GradientTape` (`circuit.gradient_tape(output, options)`):
+the operations the gradient reaches and those whose values it reads, as flat arrays that one fixed shader interprets,
+so there's no shader per program to compile and nothing to split into stages. Each record's gradients are the CPU's
+bit for bit, with the same guards, except a comparison's surrogate slope and an index read's backward difference,
+which the GPU computes in f32 instead of f64. It isn't faster than the CPU path for small circuits: 200,000 fights of
+the balance example's rule with four volleys (122 operations) take 33 ms on a Radeon 890M and 21 ms with
+`gradients_encoded` on 24 CPU threads.
+
+```rust
+let gradients = handwired_rs_gpu::GpuGradients::new(&gpu, &compiled, 0, options)?;
+let sums: Vec<f64> = gradients.gradients(&gpu, &records, Some(&weights))?;   // one per source cell
+```
+
 The circuit form doesn't make a program like this faster than native Rust; what it adds is that the same exact
 program is a stack of sparse matrix multiplications with ReLUs, which runs on tensor hardware and is differentiable.
 Set `WGPU_ADAPTER_NAME` (e.g. `llvmpipe`) to choose an adapter; the GPU tests skip when there is none.
@@ -474,7 +488,7 @@ points, since fights with the same hits change winner together, so about ±1% is
 | `inline_circuit` (one circuit into another, sharing matching expressions) | ✅ |
 | Springs (`emit_spring`, `emit_apply_spring_matrix`, `emit_animated_object`) and host timing (`timing`) | ✅ costs and planner logs match handwired's tests |
 | `#[handwired]` proc-macro frontend (`macros/`, `src/dsl/`) | ✅ see above |
-| GPU backend (`gpu/`: WGSL codegen, batch runner) | ✅ bit-exact on RADV and lavapipe |
+| GPU backend (`gpu/`: WGSL codegen, batch runner, gradients) | ✅ bit-exact on RADV and lavapipe |
 
 One deliberate difference: cells declared as exact bits also get grid 1, so comparisons over sums of bits take the
 cheap integer-bit form.
@@ -526,12 +540,13 @@ exactness, differentiability and a tensor-shaped program, not speed.
 **GPU.** Bit-exact against the CPU reference on AMD RADV (Renoir iGPU) and Mesa lavapipe; not tested on NVIDIA, Intel,
 Apple or browsers. Both tested GPUs flush subnormal values to zero, so a subnormal operand reads as 0 and values
 closer than 2^-126 compare equal, matching handwired's `flushSubnormals` executor; anything else is exact. WGSL
-lets drivers assume there are no NaNs or infinities. There's no backward pass on the GPU. A program longer than 2,000
+lets drivers assume there are no NaNs or infinities. A program longer than 2,000
 statements runs as stages, which pass values through memory and run slower than one shader would: about 2x for the
 wide hash on an integrated GPU, and more where hundreds of bits cross each cut.
 
-**Differentiability.** The reference evaluator has an exact backward pass, on the CPU only.
-`compiled.gradients(&records, output, weights, options)` sums it over many records on every core, and the `balance`
+**Differentiability.** The reference evaluator has an exact backward pass.
+`compiled.gradients(&records, output, weights, options)` sums it over many records on every core, `GpuGradients` on
+the GPU, and the `balance`
 example tunes a game with it. Comparisons, boolean atoms and index reads are step functions: their inputs get no
 useful gradient, and by default a nonzero gradient reaching a boolean atom or an index is an error rather than a
 silent zero (`BackpropOptions` picks straight-through or zero). A value read at a computed index, e.g.
@@ -584,6 +599,7 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   gradients, frame timing, step counts, matrix powers and bounds, and `advance_frame`'s exact plans (settle checks,
   snaps past the cap, late events, write-back policies, frame-rate independence), plus `emit_spring` settling.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
+- `tests/tape.rs`: gradient tapes against the reference backward pass, bit for bit, under every gradient rule.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.
 - `tests/macro_*.rs`: `#[handwired]` functions (the README example, the toggle, histograms, table lookups, nested
   array writes, `match`, wrapping arithmetic, casts, order-sensitive f32 sums, early `return`/`break`/`continue`
@@ -596,6 +612,9 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   with the default stages and again split every 5 statements, so every kind of operation reads values carried from
   earlier stages; range checks on batches, and comparisons of subnormal values, checked against the
   flushing model when the GPU flushes them.
+- `gpu/tests/gradients.rs`: GPU gradients of a fight and of a table read against the CPU tape, record by record, bit for
+  bit under exact rules and within 1e-4 under surrogates, in one dispatch and in small ones, and summed against
+  `gradients_encoded`.
 
 `cargo run --example toggle` builds the switch and prints its size. `cargo run --release --example ui_panel` runs a
 toggle and a slider (pointer handling, arming, dragging with clamping and snapping, and an easing animation: 262
