@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::collections::HashMap;
+
 use common::Rng;
 use handwired_rs::timing::{
     EvaluationKind, IDENTITY_SPRING_MATRIX, PlannedEvaluation, STOPPED_SPRING_CLOCK, SpringClock, SpringClockConfig,
@@ -1160,4 +1162,621 @@ fn a_settled_explicit_spring_lands_exactly_on_its_destination() {
         }
         assert_eq!((active, position, velocity), (0.0, destination, 0.0));
     }
+}
+
+// ---- Springs along frame-time traces -------------------------------------------------------------------------------
+
+// A small app along frame-time traces. Object 0 has x and y springs (stiffness 290, damping 30) and a scale spring
+// (stiffness 333, damping 20); object 1 has one spring (stiffness 290, damping 30). A press replaces one object's
+// destinations, and a jump press also snaps that object onto them. The host writes one matrix per stiffness and
+// damping pair before each evaluation, and 1 into every object's snap cell for a planned snap.
+
+#[derive(Clone, Debug)]
+struct Press {
+    time_stamp: f64,
+    object: usize,
+    destinations: Vec<f64>,
+    jump: bool,
+}
+
+const APP_PAIRS: [SpringConstants; 2] =
+    [SpringConstants { stiffness: 290.0, damping: 30.0 }, SpringConstants { stiffness: 333.0, damping: 20.0 }];
+const APP_SPRING_PAIR: [usize; 4] = [0, 0, 1, 0];
+const APP_OBJECT_SPRINGS: [&[usize]; 2] = [&[0, 1, 2], &[3]];
+const APP_INITIAL_POSITIONS: [f64; 4] = [400.0, 300.0, 1.0, 200.0];
+const APP_SETTLE_CHECK: usize = 8;
+const APP_EVENT_ACTIVE: usize = 9;
+const APP_SNAP: usize = 11;
+const APP_EVENT_DESTINATION: usize = 13;
+const APP_SIZE: usize = 29;
+const APP_POSITIONS: usize = APP_SIZE;
+const APP_ACTIVE: usize = APP_SIZE + 4;
+const APP_SETTLED: usize = APP_SIZE + 6;
+
+/// Per spring: its displacement from the destination in effect (field 0), its velocity (1), and that destination (2).
+fn app_spring_cell(spring: usize, field: usize) -> usize {
+    17 + 3 * spring + field
+}
+
+fn app_object_of(spring: usize) -> usize {
+    APP_OBJECT_SPRINGS.iter().position(|members| members.contains(&spring)).unwrap()
+}
+
+fn app_program() -> TensorProgram {
+    let mut circuit = Circuit::new(APP_SIZE);
+    for (pair, &constants) in APP_PAIRS.iter().enumerate() {
+        let bound = spring_matrix_bound(constants, &config());
+        for entry in 0..4 {
+            circuit.assume_range(circuit.source(4 * pair + entry), -bound, bound);
+        }
+    }
+    circuit.assume_range(circuit.source(APP_SETTLE_CHECK), 0.0, 1.0);
+    for object in 0..2 {
+        circuit.assume_range(circuit.source(APP_EVENT_ACTIVE + object), 0.0, 1.0);
+        circuit.assume_range(circuit.source(APP_SNAP + object), 0.0, 1.0);
+    }
+    let mut destinations = Vec::new();
+    for spring in 0..4 {
+        let active = circuit.source(APP_EVENT_ACTIVE + app_object_of(spring));
+        let (current, next) =
+            (circuit.source(app_spring_cell(spring, 2)), circuit.source(APP_EVENT_DESTINATION + spring));
+        destinations.push(circuit.select(active, current, next));
+    }
+    let (mut positions, mut displacements, mut velocities) =
+        ([Wire::from_index(0); 4], [Wire::from_index(0); 4], [Wire::from_index(0); 4]);
+    let mut objects = Vec::new();
+    for (object, members) in APP_OBJECT_SPRINGS.iter().enumerate() {
+        let mut springs = Vec::new();
+        for &spring in members.iter() {
+            let start = 4 * APP_SPRING_PAIR[spring];
+            springs.push(AnimatedSpring {
+                matrix: [
+                    circuit.source(start),
+                    circuit.source(start + 1),
+                    circuit.source(start + 2),
+                    circuit.source(start + 3),
+                ],
+                displacement: circuit.source(app_spring_cell(spring, 0)),
+                velocity: circuit.source(app_spring_cell(spring, 1)),
+                destination: destinations[spring],
+                destination_during_steps: Some(circuit.source(app_spring_cell(spring, 2))),
+            });
+        }
+        let mut options = AnimatedObjectOptions::new(circuit.source(APP_SETTLE_CHECK));
+        options.snap = Some(circuit.source(APP_SNAP + object));
+        let emitted = emit_animated_object(&mut circuit, &springs, options);
+        for (index, &spring) in members.iter().enumerate() {
+            positions[spring] = emitted.positions[index];
+            displacements[spring] = emitted.displacements[index];
+            velocities[spring] = emitted.velocities[index];
+        }
+        objects.push(emitted);
+    }
+    let zero = circuit.constant(0.0);
+    let mut roots: Vec<Wire> = (0..APP_SIZE).map(|cell| circuit.source(cell)).collect();
+    for object in 0..2 {
+        roots[APP_EVENT_ACTIVE + object] = zero;
+        roots[APP_SNAP + object] = zero;
+    }
+    for spring in 0..4 {
+        roots[APP_EVENT_DESTINATION + spring] = zero;
+        roots[app_spring_cell(spring, 0)] = displacements[spring];
+        roots[app_spring_cell(spring, 1)] = velocities[spring];
+        roots[app_spring_cell(spring, 2)] = destinations[spring];
+    }
+    roots.extend(positions);
+    roots.extend(objects.iter().map(|object| object.active));
+    roots.extend(objects.iter().map(|object| object.settled));
+    circuit.compile(Some(&roots))
+}
+
+struct Drawn {
+    positions: [f32; 4],
+    outputs: Vec<f32>,
+}
+
+type Settle = (f64, [f32; 2]);
+
+struct AppRun {
+    frames: HashMap<u64, Drawn>,
+    settles: Vec<Settle>,
+    commits: Vec<(f64, EvaluationKind, Vec<f32>)>,
+    steps_per_frame: Vec<u32>,
+    clock: SpringClock,
+    /// Evaluations that wrote state back without checking settling, and found nothing animating.
+    stops_without_settle_check: usize,
+}
+
+/// `offset` is added to every destination, e.g. 65,536 runs the app near 65,536 px.
+fn run_app(
+    program: &TensorProgram,
+    presses: &[Press],
+    frame_times: &[f64],
+    write_back: WriteBack,
+    offset: f64,
+) -> AppRun {
+    let mut executor = TensorExecutor::new(program);
+    let config = config();
+    let powers: Vec<Vec<[f32; 4]>> = APP_PAIRS
+        .iter()
+        .map(|&constants| {
+            let step = spring_step_matrix(constants, config.step_ms);
+            (0..=config.max_steps_per_frame)
+                .map(|steps| spring_matrix_power(step, steps).map(|entry| entry as f32))
+                .collect()
+        })
+        .collect();
+    let mut state = vec![0f32; APP_SIZE];
+    for (spring, position) in APP_INITIAL_POSITIONS.iter().enumerate() {
+        state[app_spring_cell(spring, 2)] = (position + offset) as f32;
+    }
+    let mut scratch = vec![0f32; APP_SIZE];
+    let mut run = AppRun {
+        frames: HashMap::new(),
+        settles: Vec::new(),
+        commits: Vec::new(),
+        steps_per_frame: Vec::new(),
+        clock: STOPPED_SPRING_CLOCK,
+        stops_without_settle_check: 0,
+    };
+    let mut next_press = 0;
+    for &frame_time in frame_times {
+        let mut arrived = Vec::new();
+        while next_press < presses.len() && presses[next_press].time_stamp <= frame_time {
+            arrived.push(presses[next_press].clone());
+            next_press += 1;
+        }
+        let mut steps = 0;
+        run.clock = advance_frame(
+            run.clock,
+            frame_time,
+            &arrived,
+            |press| press.time_stamp,
+            |evaluation| {
+                steps += evaluation.steps;
+                let table = if evaluation.writes_back {
+                    &mut state
+                } else {
+                    scratch.copy_from_slice(&state);
+                    &mut scratch
+                };
+                for (pair, pair_powers) in powers.iter().enumerate() {
+                    table[4 * pair..4 * pair + 4].copy_from_slice(&pair_powers[evaluation.steps as usize]);
+                }
+                table[APP_SETTLE_CHECK] = if evaluation.settle_check { 1.0 } else { 0.0 };
+                for object in 0..2 {
+                    table[APP_SNAP + object] = if evaluation.snap { 1.0 } else { 0.0 };
+                }
+                for press in &evaluation.events {
+                    table[APP_EVENT_ACTIVE + press.object] = 1.0;
+                    if press.jump {
+                        table[APP_SNAP + press.object] = 1.0;
+                    }
+                    for (index, &spring) in APP_OBJECT_SPRINGS[press.object].iter().enumerate() {
+                        table[APP_EVENT_DESTINATION + spring] = (press.destinations[index] + offset) as f32;
+                    }
+                }
+                let outputs = executor.run(table).to_vec();
+                if evaluation.writes_back {
+                    state.copy_from_slice(&outputs[..APP_SIZE]);
+                    run.commits.push((evaluation.time_ms, evaluation.kind, state.clone()));
+                    if evaluation.settle_check && evaluation.kind != Frame {
+                        run.settles.push((evaluation.time_ms, [outputs[APP_SETTLED], outputs[APP_SETTLED + 1]]));
+                    }
+                }
+                if evaluation.kind == Frame {
+                    let positions = [0, 1, 2, 3].map(|spring| outputs[APP_POSITIONS + spring]);
+                    run.frames.insert(frame_time.to_bits(), Drawn { positions, outputs: outputs.clone() });
+                }
+                let animating = outputs[APP_ACTIVE] > 0.0 || outputs[APP_ACTIVE + 1] > 0.0;
+                if evaluation.writes_back && !evaluation.settle_check && !animating {
+                    run.stops_without_settle_check += 1;
+                }
+                animating
+            },
+            write_back,
+            &config,
+        );
+        run.steps_per_frame.push(steps);
+    }
+    run
+}
+
+#[derive(Clone, Copy)]
+struct Float64Spring {
+    position: f64,
+    velocity: f64,
+    destination: f64,
+}
+
+fn step_float64_springs(springs: &mut [Float64Spring]) {
+    for (index, spring) in springs.iter_mut().enumerate() {
+        let SpringConstants { stiffness, damping } = APP_PAIRS[APP_SPRING_PAIR[index]];
+        let displacement = spring.position - spring.destination;
+        spring.velocity += (-stiffness * displacement - damping * spring.velocity) * 0.004;
+        spring.position = spring.destination + displacement + spring.velocity * 0.004;
+    }
+}
+
+/// Snaps every object whose springs are all within both thresholds, and returns the bits.
+fn settle_float64_objects(springs: &mut [Float64Spring]) -> [f32; 2] {
+    let threshold = 0.01f32 as f64;
+    let mut bits = [0f32; 2];
+    for (object, members) in APP_OBJECT_SPRINGS.iter().enumerate() {
+        let settled = members.iter().all(|&spring| {
+            (springs[spring].position - springs[spring].destination).abs() <= threshold
+                && springs[spring].velocity.abs() <= threshold
+        });
+        if settled {
+            for &spring in members.iter() {
+                springs[spring].position = springs[spring].destination;
+                springs[spring].velocity = 0.0;
+            }
+        }
+        bits[object] = if settled { 1.0 } else { 0.0 };
+    }
+    bits
+}
+
+type Traces = HashMap<u64, [f64; 4]>;
+
+struct Float64Run {
+    positions: Traces,
+    displacements: Traces,
+    settles: Vec<Settle>,
+}
+
+/// Frame-free float64 springs: 4 ms Euler steps from the moment the clock started, settle checks every 16 steps,
+/// presses applied at their timestamps after stepping to them, and a stopped clock that starts at a press. A jump
+/// snaps its object after the press's settle check, and the clock stops once every spring is exactly at rest.
+fn run_float64_reference(presses: &[Press], frame_times: &[f64], offset: f64) -> Float64Run {
+    let mut springs = APP_INITIAL_POSITIONS.map(|position| Float64Spring {
+        position: position + offset,
+        velocity: 0.0,
+        destination: position + offset,
+    });
+    let (mut animated_until_ms, mut origin_ms): (Option<f64>, f64) = (None, 0.0);
+    let mut run = Float64Run { positions: HashMap::new(), displacements: HashMap::new(), settles: Vec::new() };
+    let advance_to = |springs: &mut [Float64Spring; 4],
+                      animated_until_ms: &mut Option<f64>,
+                      origin_ms: f64,
+                      settles: &mut Vec<Settle>,
+                      time_ms: f64| {
+        while let Some(until) = *animated_until_ms
+            && until + 4.0 <= time_ms
+        {
+            step_float64_springs(springs);
+            let stepped = until + 4.0;
+            let stops = (stepped - origin_ms) % 64.0 == 0.0 && {
+                let settled = settle_float64_objects(springs);
+                settles.push((stepped, settled));
+                settled.iter().all(|&bit| bit == 1.0)
+            };
+            *animated_until_ms = if stops { None } else { Some(stepped) };
+        }
+    };
+    let mut next_press = 0;
+    for &frame_time in frame_times {
+        while next_press < presses.len() && presses[next_press].time_stamp <= frame_time {
+            let time_ms = presses[next_press].time_stamp;
+            advance_to(&mut springs, &mut animated_until_ms, origin_ms, &mut run.settles, time_ms);
+            let mut jumped = Vec::new();
+            while next_press < presses.len() && presses[next_press].time_stamp == time_ms {
+                let press = &presses[next_press];
+                next_press += 1;
+                for (index, &spring) in APP_OBJECT_SPRINGS[press.object].iter().enumerate() {
+                    springs[spring].destination = press.destinations[index] + offset;
+                }
+                if press.jump {
+                    jumped.push(press.object);
+                }
+            }
+            let snap_jumped = |springs: &mut [Float64Spring; 4]| {
+                for &object in &jumped {
+                    for &spring in APP_OBJECT_SPRINGS[object] {
+                        springs[spring].position = springs[spring].destination;
+                        springs[spring].velocity = 0.0;
+                    }
+                }
+            };
+            if animated_until_ms.is_none() {
+                let settled = settle_float64_objects(&mut springs);
+                run.settles.push((time_ms, settled));
+                snap_jumped(&mut springs);
+                if settled.iter().enumerate().any(|(object, &bit)| bit == 0.0 && !jumped.contains(&object)) {
+                    animated_until_ms = Some(time_ms);
+                    origin_ms = time_ms;
+                }
+            } else {
+                snap_jumped(&mut springs);
+                if springs.iter().all(|spring| spring.position == spring.destination && spring.velocity == 0.0) {
+                    animated_until_ms = None;
+                }
+            }
+        }
+        advance_to(&mut springs, &mut animated_until_ms, origin_ms, &mut run.settles, frame_time);
+        run.positions.insert(frame_time.to_bits(), springs.map(|spring| spring.position));
+        run.displacements.insert(frame_time.to_bits(), springs.map(|spring| spring.position - spring.destination));
+    }
+    run
+}
+
+/// chenguini ui.md's order in float64: handle inputs, new layout, then an animation tick that catches up toward the
+/// new destinations, with one settle check per frame.
+fn run_ui_md_order(presses: &[Press], frame_times: &[f64]) -> Traces {
+    let mut springs =
+        APP_INITIAL_POSITIONS.map(|position| Float64Spring { position, velocity: 0.0, destination: position });
+    let mut animated_until_ms: Option<f64> = None;
+    let mut positions = HashMap::new();
+    let mut next_press = 0;
+    for &now in frame_times {
+        while next_press < presses.len() && presses[next_press].time_stamp <= now {
+            let press = &presses[next_press];
+            next_press += 1;
+            for (index, &spring) in APP_OBJECT_SPRINGS[press.object].iter().enumerate() {
+                springs[spring].destination = press.destinations[index];
+            }
+        }
+        let mut until = animated_until_ms.unwrap_or(now);
+        let steps = 300.0f64.min(((now - until) / 4.0).floor());
+        until += steps * 4.0;
+        for _ in 0..steps as u32 {
+            step_float64_springs(&mut springs);
+        }
+        animated_until_ms =
+            if settle_float64_objects(&mut springs).iter().all(|&bit| bit == 1.0) { None } else { Some(until) };
+        positions.insert(now.to_bits(), springs.map(|spring| spring.position));
+    }
+    positions
+}
+
+/// handwired's test generator (mulberry32), so the traces are the same presses.
+fn mulberry32(mut seed: u32) -> impl FnMut() -> f64 {
+    move || {
+        seed = seed.wrapping_add(0x6D2B_79F5);
+        let mut value = (seed ^ (seed >> 15)).wrapping_mul(1 | seed);
+        value = value.wrapping_add((value ^ (value >> 7)).wrapping_mul(61 | value)) ^ value;
+        (value ^ (value >> 14)) as f64 / 4_294_967_296.0
+    }
+}
+
+/// 12 presses between frames on the 1/64 ms grid, 90 to 700 ms apart, so most retarget moving springs. With
+/// `jump_chance` above 0, some presses are jumps.
+fn app_presses(seed: u32, jump_chance: f64) -> Vec<Press> {
+    let mut random = mulberry32(seed);
+    let mut presses = Vec::new();
+    let mut time = 100.0;
+    for _ in 0..12 {
+        time += 90.0 + random() * 610.0;
+        let object = if random() < 0.6 { 0 } else { 1 };
+        let destinations = if object == 0 {
+            let x = (random() * 800.0).round();
+            let y = (random() * 600.0).round();
+            vec![x, y, ((0.5 + random()) * 64.0).round() / 64.0]
+        } else {
+            vec![(random() * 800.0).round()]
+        };
+        // Drawn only when asked, so the traces without jumps stay the same.
+        let jump = jump_chance > 0.0 && random() < jump_chance;
+        presses.push(Press { time_stamp: (time * 64.0).round() / 64.0, object, destinations, jump });
+    }
+    presses
+}
+
+fn frame_positions(run: &AppRun) -> Traces {
+    run.frames.iter().map(|(&time, frame)| (time, frame.positions.map(f64::from))).collect()
+}
+
+/// Each spring's stored displacement after each frame's evaluation.
+fn frame_displacements(run: &AppRun) -> Traces {
+    run.frames
+        .iter()
+        .map(|(&time, frame)| (time, [0, 1, 2, 3].map(|spring| frame.outputs[app_spring_cell(spring, 0)] as f64)))
+        .collect()
+}
+
+fn max_frame_difference(left: &Traces, right: &Traces) -> f64 {
+    let (mut worst, mut shared) = (0f64, 0);
+    for (time, positions) in left {
+        let Some(other) = right.get(time) else { continue };
+        shared += 1;
+        for (position, other) in positions.iter().zip(other) {
+            worst = worst.max((position - other).abs());
+        }
+    }
+    assert!(shared > 20, "only {shared} shared frames");
+    worst
+}
+
+fn differing_bits(left: &[f32], right: &[f32]) -> usize {
+    left.iter().zip(right).filter(|(left, right)| left.to_bits() != right.to_bits()).count()
+}
+
+/// Seeds 1 to 8 without jumps, then 4 seeds where about a third of the presses jump.
+fn trace_cases() -> Vec<(u32, f64)> {
+    (1..=8).map(|seed| (seed, 0.0)).chain((21..=24).map(|seed| (seed, 0.35))).collect()
+}
+
+/// The 120 fps baseline, then 10, 30 and 60 fps and 500 ms stalls at 60 and 120 fps.
+fn trace_schedules(presses: &[Press]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let duration_ms = presses.last().unwrap().time_stamp + 2000.0;
+    let stall = Some((presses[2].time_stamp - 100.0, 500.0));
+    let others = vec![
+        frame_times_at(10.0, duration_ms, None),
+        frame_times_at(30.0, duration_ms, None),
+        frame_times_at(60.0, duration_ms, None),
+        frame_times_at(60.0, duration_ms, stall),
+        frame_times_at(120.0, duration_ms, stall),
+    ];
+    (frame_times_at(120.0, duration_ms, None), others)
+}
+
+fn commit_log(run: &AppRun) -> Vec<(EvaluationKind, f64)> {
+    run.commits.iter().map(|&(time, kind, _)| (kind, time)).collect()
+}
+
+#[test]
+fn along_frame_traces_committed_tables_and_displays_are_bit_identical_at_every_frame_rate() {
+    let program = app_program();
+    let mut stops_at_jumps = 0;
+    for (seed, jump_chance) in trace_cases() {
+        let presses = app_presses(seed, jump_chance);
+        let (baseline, others) = trace_schedules(&presses);
+        let baseline_run = run_app(&program, &presses, &baseline, WriteBack::EventsAndSettleChecks, 0.0);
+        for frame_times in std::iter::once(&baseline).chain(&others) {
+            let run = run_app(&program, &presses, frame_times, WriteBack::EventsAndSettleChecks, 0.0);
+            assert_eq!(commit_log(&run), commit_log(&baseline_run), "seed {seed}");
+            for (commit, baseline_commit) in run.commits.iter().zip(&baseline_run.commits) {
+                assert_eq!(differing_bits(&commit.2, &baseline_commit.2), 0, "seed {seed} at {}", commit.0);
+            }
+            let mut shared_displays = 0;
+            for (time, frame) in &run.frames {
+                let Some(other) = baseline_run.frames.get(time) else { continue };
+                shared_displays += 1;
+                assert_eq!(
+                    differing_bits(&frame.outputs, &other.outputs),
+                    0,
+                    "seed {seed} at {}",
+                    f64::from_bits(*time)
+                );
+            }
+            assert!(shared_displays > 20);
+            let reference = run_float64_reference(&presses, frame_times, 0.0);
+            assert_eq!(run.settles, reference.settles, "seed {seed}");
+            assert!(max_frame_difference(&frame_positions(&run), &reference.positions) < 5e-4, "seed {seed}");
+            assert!(run.commits.iter().all(|commit| commit.1 != Snap));
+        }
+        // Without jumps, a running clock only stops at a settle check. A jump snaps its object, and when the other
+        // object is exactly at rest, nothing animates and the clock stops at the jump, which needs the rest bit.
+        if jump_chance == 0.0 {
+            assert_eq!(baseline_run.stops_without_settle_check, 0, "seed {seed}");
+        } else {
+            stops_at_jumps += baseline_run.stops_without_settle_check;
+        }
+    }
+    // handwired measured 5 stops over the 4 traces with jumps.
+    assert!(stops_at_jumps > 0);
+}
+
+#[test]
+fn writing_back_every_evaluation_stays_within_5e_4_px_of_float64_and_settles_like_it() {
+    let program = app_program();
+    let mut runs_with_different_settles = 0;
+    for (seed, jump_chance) in trace_cases() {
+        let presses = app_presses(seed, jump_chance);
+        let (baseline, others) = trace_schedules(&presses);
+        let baseline_run = run_app(&program, &presses, &baseline, WriteBack::EveryEvaluation, 0.0);
+        for frame_times in std::iter::once(&baseline).chain(&others) {
+            let run = run_app(&program, &presses, frame_times, WriteBack::EveryEvaluation, 0.0);
+            let reference = run_float64_reference(&presses, frame_times, 0.0);
+            assert!(max_frame_difference(&frame_positions(&run), &reference.positions) < 5e-4, "seed {seed}");
+            assert!(
+                max_frame_difference(&frame_positions(&run), &frame_positions(&baseline_run)) < 5e-4,
+                "seed {seed}"
+            );
+            if run.settles != reference.settles {
+                runs_with_different_settles += 1;
+            }
+        }
+    }
+    // Every evaluation rounds the stored displacement at its own size, so drift shrinks near rest.
+    assert_eq!(runs_with_different_settles, 0);
+}
+
+#[test]
+fn a_3_s_stall_snaps_every_object_once_and_tables_stay_bit_identical_across_frame_rates() {
+    let program = app_program();
+    let press = |time_stamp: f64, object: usize, destinations: &[f64]| Press {
+        time_stamp,
+        object,
+        destinations: destinations.to_vec(),
+        jump: false,
+    };
+    let presses = [
+        press(100.0, 0, &[700.0, 50.0, 1.5]),
+        press(250.0, 1, &[20.0]),
+        // During the stall, 2.9 s before the next frame.
+        press(500.0, 0, &[120.0, 480.0, 0.75]),
+        press(4000.0, 1, &[640.0]),
+        press(4100.0, 0, &[300.0, 300.0, 1.0]),
+    ];
+    let stall = Some((400.0, 3000.0));
+    let runs: Vec<AppRun> = [120.0, 60.0, 30.0, 10.0]
+        .iter()
+        .map(|&hz| {
+            run_app(&program, &presses, &frame_times_at(hz, 6000.0, stall), WriteBack::EventsAndSettleChecks, 0.0)
+        })
+        .collect();
+    for run in &runs {
+        assert!(run.steps_per_frame.iter().all(|&steps| steps <= 300));
+        let snaps: Vec<&(f64, EvaluationKind, Vec<f32>)> =
+            run.commits.iter().filter(|commit| commit.1 == Snap).collect();
+        assert_eq!(snaps.iter().map(|commit| commit.0).collect::<Vec<_>>(), vec![3400.0]);
+        // Right after the snap every displacement and velocity is ±0.
+        for spring in 0..4 {
+            assert_eq!(snaps[0].2[app_spring_cell(spring, 0)], 0.0);
+            assert_eq!(snaps[0].2[app_spring_cell(spring, 1)], 0.0);
+        }
+        assert_eq!(commit_log(run), commit_log(&runs[0]));
+        for (commit, first) in run.commits.iter().zip(&runs[0].commits) {
+            assert_eq!(differing_bits(&commit.2, &first.2), 0);
+        }
+        assert_eq!(run.clock.animated_until_ms, None);
+    }
+    // Every frame rate resumes at 3,400 ms, and shows the snapped objects there.
+    assert_eq!(runs[3].frames[&3400f64.to_bits()].positions, [120.0, 480.0, 0.75, 20.0]);
+}
+
+#[test]
+fn far_from_the_origin_both_policies_settle_like_float64_and_displacements_stay_close() {
+    let program = app_program();
+    for offset in [65_536.0, 131_072.0, 1_048_576.0f64] {
+        // FP32 values near the offset are this far apart, e.g. 1/128 px near 65,536 px.
+        let spacing = 2f64.powf(offset.log2() - 23.0);
+        for write_back in [WriteBack::EveryEvaluation, WriteBack::EventsAndSettleChecks] {
+            let (mut worst_displacement, mut worst_position) = (0f64, 0f64);
+            for seed in 1..=8 {
+                let presses = app_presses(seed, 0.0);
+                let (baseline, others) = trace_schedules(&presses);
+                for frame_times in std::iter::once(&baseline).chain(&others) {
+                    let run = run_app(&program, &presses, frame_times, write_back, offset);
+                    let reference = run_float64_reference(&presses, frame_times, offset);
+                    assert_eq!(run.settles, reference.settles, "offset {offset} seed {seed}");
+                    // Nothing still animates 2 s after the last press.
+                    assert_eq!(run.clock.animated_until_ms, None);
+                    worst_displacement = worst_displacement
+                        .max(max_frame_difference(&frame_displacements(&run), &reference.displacements));
+                    worst_position =
+                        worst_position.max(max_frame_difference(&frame_positions(&run), &reference.positions));
+                }
+            }
+            if offset <= 131_072.0 {
+                // handwired measured 1.4e-4 px writing back every evaluation and 7.4e-5 px with events and settle
+                // checks, as at 0 px.
+                assert!(worst_displacement < 5e-4, "{offset} {write_back:?}: {worst_displacement}");
+                // The drawn position rounds once at the destination's magnitude.
+                assert!(worst_position < spacing / 2.0 + 5e-4, "{offset} {write_back:?}: {worst_position}");
+            } else {
+                // FP32 values near 1,048,576 px are 1/8 px apart, so the scale spring's destinations, on a 1/64 grid,
+                // round before they reach the program.
+                assert!(worst_displacement < spacing, "{offset} {write_back:?}: {worst_displacement}");
+            }
+        }
+    }
+}
+
+#[test]
+fn ui_md_order_applying_presses_then_catching_up_differs_across_frame_rates() {
+    let (mut worst_10, mut worst_30, mut worst_60) = (0f64, 0f64, 0f64);
+    for seed in 1..=8 {
+        let presses = app_presses(seed, 0.0);
+        let duration_ms = presses.last().unwrap().time_stamp + 2000.0;
+        let baseline = run_ui_md_order(&presses, &frame_times_at(120.0, duration_ms, None));
+        let at = |hz: f64| run_ui_md_order(&presses, &frame_times_at(hz, duration_ms, None));
+        worst_10 = worst_10.max(max_frame_difference(&at(10.0), &baseline));
+        worst_30 = worst_30.max(max_frame_difference(&at(30.0), &baseline));
+        worst_60 = worst_60.max(max_frame_difference(&at(60.0), &baseline));
+    }
+    // handwired measured 359, 124 and 53 px.
+    assert!(worst_10 > 100.0 && worst_30 > 50.0 && worst_60 > 10.0, "{worst_10} {worst_30} {worst_60}");
 }

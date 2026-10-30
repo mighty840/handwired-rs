@@ -561,8 +561,7 @@ a threshold be tuned at all, e.g. "hits on a roll of at least t", whose exact gr
 export to a deep learning framework.
 
 **Not ported from handwired.** Source-table cell declarations beyond the simplified ones, and its demos
-(HandwiredOS, the learned gallery, JSON search). The springs' end-to-end frame-trace tests (whole animations along
-10–120 fps traces) aren't ported; their parts are.
+(HandwiredOS, the learned gallery, JSON search).
 
 ## License
 
@@ -597,7 +596,10 @@ MIT. handwired is MIT-licensed, Copyright (c) 2026 Cheng Lou; this port keeps th
   float64 Euler steps and an FP32 twin, its cost (14 operations in 3 layers), animated objects' costs and an
   independent FP32 twin bit for bit (settle thresholds, exact rest, subnormals, snaps), rebasing, refusals, inlining,
   gradients, frame timing, step counts, matrix powers and bounds, and `advance_frame`'s exact plans (settle checks,
-  snaps past the cap, late events, write-back policies, frame-rate independence), plus `emit_spring` settling.
+  snaps past the cap, late events, write-back policies, frame-rate independence), plus `emit_spring` settling. And
+  handwired's end-to-end traces: a two-object app driven by presses along 10–120 fps frame times and 500 ms and 3 s
+  stalls, whose committed state and displays are bit-identical at every frame rate, settle at the same checks as
+  float64 springs and stay within 5e-4 px of them, also near 65,536 to 1,048,576 px.
 - `tests/backprop.rs`: gradients of products, selects, boolean atoms and index reads.
 - `tests/tape.rs`: gradient tapes against the reference backward pass, bit for bit, under every gradient rule.
 - `tests/helpers.rs`: `emit_round` (ties to even), `emit_or`, `emit_clamp_exact` and `emit_maximum`.

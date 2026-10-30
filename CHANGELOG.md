@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The springs' end-to-end frame-trace tests, ported from handwired: a two-object app with presses and jumps along
+  10, 30, 60 and 120 fps frame times and 500 ms and 3 s stalls, against float64 springs and ui.md's order, also near
+  65,536 to 1,048,576 px. Every assertion holds as in handwired, on the same presses.
 - Index-read tables are stored as a base and a stride when their candidates sit at evenly spaced positions (a run of
   cells, a reversed run, one repeated value), and otherwise as one list that every read of the same table shares;
   ported from handwired. `IndexReadRow::candidate_positions` is now a `CandidatePositions` (`Strided` or `Listed`,
