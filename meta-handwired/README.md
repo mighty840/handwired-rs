@@ -83,9 +83,8 @@ kas build meta-handwired/kas/wrynose-qemux86-64.yml
 
 - Tested on scarthgap (5.0, Rust 1.75) and wrynose (6.0): `handwired-rs-run` and `handwired-rs-sign` build with
   Rust 1.75. scarthgap writes SPDX 2.2 and wrynose SPDX 3.0; both list the proof report and carry the annotation.
-- `handwired-rs-run` and `handwired-rs-sign` aren't on crates.io yet, so their recipes' checksums are placeholders
-  until they are. CI builds the recipes from the crates this repository packages: it writes each package's checksum
-  into its recipe and puts the package in the download directory, where the `crate://` fetcher finds it.
+- The recipes fetch `handwired-rs-run` and `handwired-rs-sign` 0.1.0 from crates.io, checked against the published
+  crates' checksums. Changes to `run/` and `sign/` on main reach the layer with the next release of those crates.
 - The example's signing key was discarded after signing `heater.hwc`; replace `example.pub` and `heater.hwc.sig`
   with your own.
 - Exporting programs during the image build, from a native recipe that runs the Rust function, isn't supported yet.

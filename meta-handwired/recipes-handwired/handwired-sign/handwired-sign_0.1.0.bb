@@ -12,9 +12,7 @@ SRC_URI = "crate://crates.io/handwired-rs-sign/${PV};name=handwired-rs-sign \
            crate://crates.io/ed25519-compact/2.6.0 \
            crate://crates.io/hmac-sha256/1.1.15 \
 "
-# The published crate's checksum, filled in once 0.1.0 is on crates.io. Until then CI builds this recipe from the
-# crate the repository packages, with that crate's checksum.
-SRC_URI[handwired-rs-sign.sha256sum] = "0000000000000000000000000000000000000000000000000000000000000000"
+SRC_URI[handwired-rs-sign.sha256sum] = "b13fe0594bcdc4bff9210c74427d5d39d8acb333e7c8f847cf4723062ce199d1"
 SRC_URI[ed25519-compact-2.6.0.sha256sum] = "1454db4f2edb7f0e8fe0c5b375b0c978fc63244cc9f010d160e417eb10139aa8"
 SRC_URI[hmac-sha256-1.1.15.sha256sum] = "1ad320b3b96fb2a455a0726d16efe0a5afdbd34b71dea5bc53b05ea057714d4e"
 S = "${CARGO_VENDORING_DIRECTORY}/handwired-rs-sign-${PV}"

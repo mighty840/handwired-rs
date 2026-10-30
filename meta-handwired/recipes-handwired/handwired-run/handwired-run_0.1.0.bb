@@ -7,9 +7,7 @@ LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=1a9a7e7ebdb4a06aacd3f5cda2d45c62"
 
 SRC_URI = "crate://crates.io/handwired-rs-run/${PV};name=handwired-rs-run"
-# The published crate's checksum, filled in once 0.1.0 is on crates.io. Until then CI builds this recipe from the
-# crate the repository packages, with that crate's checksum.
-SRC_URI[handwired-rs-run.sha256sum] = "0000000000000000000000000000000000000000000000000000000000000000"
+SRC_URI[handwired-rs-run.sha256sum] = "5c062c6a0f8892021de8eea35851cb18fd6c0a5f19a63af6ea50056fa8c58b80"
 S = "${CARGO_VENDORING_DIRECTORY}/handwired-rs-run-${PV}"
 
 inherit cargo
