@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-10-30): handwired-rs and handwired-rs-gpu 0.9.0, handwired-rs-macros 0.6.0, handwired-rs-run and handwired-rs-sign 0.1.0
 
 - Loop programs on the GPU (`handwired_rs_gpu::looped`), after handwired's: compiled steps that each run once per
   position of a document, reading the document's cell there, registers carried from position to position, fields
