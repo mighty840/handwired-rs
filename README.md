@@ -255,7 +255,8 @@ comparison of the index. `==` and `!=` compare the variant and, for variants wit
 two give an unspecified value for `None`, where Rust panics). The derive adds `ActionHw`, the circuit form.
 After `use Action::*`, a tuple variant needs no enum either, `Attack(d)`: it takes its enum from where it goes (a result,
 an annotated `let`, an assigned variable, a field, an argument, the other branch of an `if` or `match`, the other side
-of `==`), and where nothing says, e.g. `let x = Attack(3);`, it needs an annotation. Unit variants work bare as in
+of `==`), also when every branch is bare. Where nothing says, it needs an annotation: `let x = Attack(3);`, or an `if`
+whose branches are all bare assigned to a variable declared without a type. Unit variants work bare as in
 patterns, but a variant with named fields needs its enum, `Action::Move { dx, dy: 0 }`, since bare it reads like a
 struct. `Some(x)`
 takes its type from where it goes (an annotated `let`, a result, an assigned variable, a field), else from `x`, so a literal may

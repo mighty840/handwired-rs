@@ -106,3 +106,25 @@ fn bare_variants_take_their_enum_from_fields_arguments_and_comparisons() {
     );
     assert_eq!(roll, Roll::Hit(3, true));
 }
+
+/// Both branches bare, the function's result naming the enum.
+#[handwired]
+pub fn pick(choice: bool) -> Act {
+    if choice { Hit(1) } else { Heal(2, true) }
+}
+
+/// Every arm bare.
+#[handwired]
+pub fn pick_arm(#[range(0, 9)] n: u8) -> Act {
+    match n {
+        0 => Hit(1),
+        1 => Heal(n, false),
+        _ => Wait,
+    }
+}
+
+#[test]
+fn both_branches_bare() {
+    assert_eq!(pick_circuit().verify(100).unwrap().skipped, 0);
+    assert_eq!(pick_arm_circuit().verify(100).unwrap().skipped, 0);
+}
