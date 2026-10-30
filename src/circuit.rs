@@ -272,6 +272,7 @@ impl Circuit {
             );
         }
         self.ranges[wire.index()] = narrowed;
+        self.check_source_grid(wire);
     }
 
     /// Declare that every value of the wire is a multiple of `step`, a power of two.
@@ -298,6 +299,28 @@ impl Circuit {
             );
         }
         self.grids[wire.index()] = Some(grid);
+        self.check_source_grid(wire);
+    }
+
+    /// A source with a finite range and a grid promises that every multiple of the grid in the range may arrive.
+    /// FP32 holds those multiples only within 2^24 grid steps of 0, so a source declared past that is refused.
+    fn check_source_grid(&self, wire: Wire) {
+        let (Some(grid), range) = (self.grids[wire.index()], self.ranges[wire.index()]) else { return };
+        if wire.index() >= self.source_size || !range.min.is_finite() || !range.max.is_finite() {
+            return;
+        }
+        let steps = (range.max / grid).floor().abs().max((range.min / grid).ceil().abs());
+        assert!(
+            steps <= EXACT_GRID_STEPS && steps * grid <= f32::MAX as f64,
+            "source {} is declared on grid {} over {}..{}, but FP32 can't hold every value of that grid past 2^24 \
+             steps ({}), e.g. {}. Narrow the range or widen the grid",
+            wire.index(),
+            grid,
+            range.min,
+            range.max,
+            EXACT_GRID_STEPS * grid,
+            (EXACT_GRID_STEPS + 1.0) * grid * if range.max / grid > EXACT_GRID_STEPS { 1.0 } else { -1.0 }
+        );
     }
 
     /// Declare that the wire holds exactly 0 or 1. Narrows its range to 0..1.
