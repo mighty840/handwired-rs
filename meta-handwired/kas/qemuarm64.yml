@@ -1,0 +1,7 @@
+# Builds for 64-bit Arm instead, added after a release's file:
+#   kas build meta-handwired/kas/scarthgap-qemux86-64.yml:meta-handwired/kas/qemuarm64.yml
+# Without KVM for Arm on an x86 host, QEMU emulates the CPU, so the runtime tests take longer.
+header:
+  version: 14
+
+machine: qemuarm64

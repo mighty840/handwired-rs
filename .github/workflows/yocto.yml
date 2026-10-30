@@ -8,13 +8,27 @@ on:
     paths: ["meta-handwired/**", "run/**", "sign/**", ".github/workflows/yocto.yml"]
 
 jobs:
-  scarthgap:
-    name: meta-handwired on scarthgap (build, then test the image in QEMU)
+  image:
+    name: meta-handwired on ${{ matrix.name }} (build, then test the image in QEMU)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: scarthgap, qemux86-64
+            id: scarthgap-qemux86-64
+            kas: meta-handwired/kas/scarthgap-qemux86-64.yml
+          - name: scarthgap, qemuarm64
+            id: scarthgap-qemuarm64
+            kas: meta-handwired/kas/scarthgap-qemux86-64.yml:meta-handwired/kas/qemuarm64.yml
+          # SPDX 3.0, and no poky repository
+          - name: wrynose, qemux86-64
+            id: wrynose-qemux86-64
+            kas: meta-handwired/kas/wrynose-qemux86-64.yml
     env:
       KAS_WORK_DIR: /mnt/yocto
-      KAS_FILE: meta-handwired/kas/scarthgap-qemux86-64.yml
+      KAS_FILE: ${{ matrix.kas }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -66,9 +80,10 @@ jobs:
           spdx=/mnt/yocto/build/tmp/deploy/spdx
           # grep -r, not find | xargs grep: xargs splits the files into batches and fails if any batch has no match.
           grep -rl --include='*.spdx.json' 'HANDWIRED_REPORTS=heater.hwc.proof.json' "$spdx"
-          # On failure, show what the heater's documents list.
-          if ! grep -rlE --include='*.spdx.json' '"fileName": ?"[^"]*heater\.hwc\.proof\.json"' "$spdx"; then
-            grep -rhoE --include='*heater*.spdx.json' '"fileName": ?"[^"]*"' "$spdx" | sort -u
+          # The installed file: "fileName" in SPDX 2.2, "name" in SPDX 3.0. On failure, show what is listed.
+          installed='"(fileName|name)": ?"/?usr/share/handwired/heater\.hwc\.proof\.json"'
+          if ! grep -rlE --include='*.spdx.json' "$installed" "$spdx"; then
+            grep -rhoE --include='*.spdx.json' '"(fileName|name)": ?"[^"]*handwired[^"]*"' "$spdx" | sort -u | head -50
             exit 1
           fi
       - name: Test the image in QEMU
@@ -77,7 +92,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: yocto-logs
+          name: yocto-logs-${{ matrix.id }}
           path: |
             /mnt/yocto/build/tmp/log/
             /mnt/yocto/build/tmp/work/*/core-image-minimal/*/testimage/

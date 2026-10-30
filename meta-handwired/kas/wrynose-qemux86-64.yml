@@ -1,0 +1,50 @@
+# wrynose (6.0 LTS) writes SPDX 3.0. From whinlatter on there is no poky repository: bitbake, openembedded-core and
+# meta-yocto are separate.
+#   kas build meta-handwired/kas/wrynose-qemux86-64.yml
+#   kas shell meta-handwired/kas/wrynose-qemux86-64.yml -c "bitbake core-image-minimal -c testimage"
+header:
+  version: 14
+
+machine: qemux86-64
+distro: poky
+target: core-image-minimal
+
+repos:
+  # This repository: the layer lives at meta-handwired/.
+  handwired-rs:
+    layers:
+      meta-handwired:
+  # oe-init-build-env finds bitbake beside openembedded-core.
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    branch: "2.18"
+    layers:
+      .: disabled
+  openembedded-core:
+    url: https://git.openembedded.org/openembedded-core
+    branch: wrynose
+    layers:
+      meta:
+  meta-yocto:
+    url: https://git.yoctoproject.org/meta-yocto
+    branch: wrynose
+    layers:
+      meta-poky:
+
+local_conf_header:
+  handwired: |
+    IMAGE_INSTALL:append = " handwired-run handwired-heater"
+    IMAGE_FEATURES:append = " ssh-server-dropbear"
+  testimage: |
+    IMAGE_CLASSES:append = " testimage"
+    # The tests log in over SSH as root with no password (debug-tweaks before styhead).
+    EXTRA_IMAGE_FEATURES:append = " allow-empty-password empty-root-password allow-root-login"
+    TEST_SUITES = "ping ssh handwired"
+    TEST_RUNQEMUPARAMS += " slirp"
+    TEST_QEMUBOOT_TIMEOUT = "1500"
+  # Reuse the Yocto Project's shared state, so only what this layer adds is built.
+  sstate: |
+    SSTATE_MIRRORS ?= "file://.* http://sstate.yoctoproject.org/all/PATH;downloadfilename=PATH"
+    BB_SIGNATURE_HANDLER = "OEEquivHash"
+    BB_HASHSERVE = "auto"
+    BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"

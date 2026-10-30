@@ -66,18 +66,23 @@ handwired-sign admit --log /var/lib/handwired/log --key /etc/handwired/trusted/r
 
 ## Build and test
 
-CI (`.github/workflows/yocto.yml`) builds `core-image-minimal` for `qemux86-64` on scarthgap with kas, reusing the
-Yocto Project's shared state, and runs the layer's runtime tests (`lib/oeqa/runtime/cases/handwired.py`) on it
-under QEMU:
+CI (`.github/workflows/yocto.yml`) builds `core-image-minimal` with kas, reusing the Yocto Project's shared state,
+checks the image's SPDX documents, and runs the layer's runtime tests (`lib/oeqa/runtime/cases/handwired.py`) on
+it under QEMU, in three configurations: scarthgap on `qemux86-64` and on `qemuarm64`, and wrynose on `qemux86-64`.
 
 ```sh
 kas build meta-handwired/kas/scarthgap-qemux86-64.yml
 kas shell meta-handwired/kas/scarthgap-qemux86-64.yml -c "bitbake core-image-minimal -c testimage"
+# 64-bit Arm: add the machine's file
+kas build meta-handwired/kas/scarthgap-qemux86-64.yml:meta-handwired/kas/qemuarm64.yml
+# wrynose, which writes SPDX 3.0
+kas build meta-handwired/kas/wrynose-qemux86-64.yml
 ```
 
 ## Status
 
-- Tested only on scarthgap (Rust 1.75): `handwired-rs-run` and `handwired-rs-sign` build with Rust 1.75.
+- Tested on scarthgap (5.0, Rust 1.75) and wrynose (6.0): `handwired-rs-run` and `handwired-rs-sign` build with
+  Rust 1.75. scarthgap writes SPDX 2.2 and wrynose SPDX 3.0; both list the proof report and carry the annotation.
 - `handwired-rs-run` and `handwired-rs-sign` aren't on crates.io yet, so their recipes' checksums are placeholders
   until they are. CI builds the recipes from the crates this repository packages: it writes each package's checksum
   into its recipe and puts the package in the download directory, where the `crate://` fetcher finds it.
