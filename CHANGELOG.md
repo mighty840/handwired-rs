@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- Fixed: a source declared on a grid with a range past 2^24 grid steps of 0, e.g. `assume_range(a, 0.0, 16_777_218.0)`
-  with `assume_grid(a, 1.0)`, was accepted, although FP32 can't hold every value of that grid there (16,777,217
-  arrives as 16,777,216). `assume_range` and `assume_grid` now panic on such a source, in either order, like other
-  contract violations. Ranges without a grid and computed values aren't affected, and `#[handwired]` parameters
-  already had to lie within ±2^24.
 - Loop programs on the GPU (`handwired_rs_gpu::looped`), after handwired's: compiled steps that each run once per
   position of a document, reading the document's cell there, registers carried from position to position, fields
   that an earlier step wrote per position (bits packed 32 to a word), and shared cells. `GpuLoop` writes one shader
@@ -115,6 +110,14 @@
   programs now has a known integer range, so GPU stages pack all of them: the wide hash carries 22 words per record
   between stages instead of 87 (its run time is unchanged), and `TensorProgram::ranges`/`grids` are tighter.
 ||||||| parent of 30e2d97 (handwired-rs 0.8.1: refuse a source declared on a grid past 2^24 steps)
+
+## 0.8.1 (2026-10-30): handwired-rs 0.8.1
+
+- Fixed: a source declared on a grid with a range past 2^24 grid steps of 0, e.g. `assume_range(a, 0.0, 16_777_218.0)`
+  with `assume_grid(a, 1.0)`, was accepted, although FP32 can't hold every value of that grid there (16,777,217
+  arrives as 16,777,216). `assume_range` and `assume_grid` now panic on such a source, in either order, like other
+  contract violations. Ranges without a grid and computed values aren't affected, and `#[handwired]` parameters
+  already had to lie within ±2^24.
 
 ## 0.8.0 (2026-10-18): handwired-rs and handwired-rs-gpu 0.8.0, handwired-rs-macros 0.5.0
 
