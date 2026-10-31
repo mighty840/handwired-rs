@@ -630,18 +630,21 @@ impl<'a> Program<'a> {
                 *output = value;
             }
             // A one-hot group's selected position and its sum of bits; the position is kept as an i32's bits.
+            // Summed in f32, which an FPU without f64 does in fixed time. For exact 0/1 bits this is the CPU
+            // executor's f64 sum: positions below 2^24 are exact, and a larger one rounds to at least 2^24, which
+            // every read clamps to its last candidate as it would the exact position.
             let mut at = layer.computes.0;
             for _ in 0..layer.computes.1 {
                 let slot = word(bytes, at) as usize;
                 let count = word(bytes, at + 4) as usize;
-                let (mut index, mut mass) = (0f64, 0f64);
+                let (mut index, mut mass) = (0f32, 0f32);
                 for position in 0..count {
-                    let bit = values[word_at(bytes, at + 8, position) as usize] as f64;
-                    index += position as f64 * bit;
+                    let bit = values[word_at(bytes, at + 8, position) as usize];
+                    index += position as f32 * bit;
                     mass += bit;
                 }
                 gather_indices[slot] = f32::from_bits(index as i32 as u32);
-                gather_masses[slot] = mass as f32;
+                gather_masses[slot] = mass;
                 at += 8 + 4 * count;
             }
             let mut at = layer.gather_reads.0;

@@ -6,6 +6,10 @@
   source cells, trained with Adam through `backpropagate_reference` until one rectangle per photo matches a sketch,
   with a penalty that pulls nearly aligned photo edges onto one line and frames taken back when they raise the loss.
   The three preset sketches come to rest as the demo's do.
+- handwired-rs-run: a gather's selected position and sum of bits are added in f32, not f64, so no work that depends
+  on the values uses f64, which an FPU without f64 (Cortex-M33, M4F) does in software in a time that depends on the
+  operands. Results are unchanged for one-hot groups of 0/1 bits; on a Cortex-M33 `run` no longer calls the software
+  f64 add, multiply or conversions, and is 208 bytes smaller.
 
 ## 0.9.0 (2026-10-30): handwired-rs and handwired-rs-gpu 0.9.0, handwired-rs-macros 0.6.0, handwired-rs-run and handwired-rs-sign 0.1.0
 
