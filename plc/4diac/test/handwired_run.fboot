@@ -21,7 +21,7 @@ Test;<Request ID="20" Action="WRITE"><Connection Source="'heater.hwc'" Destinati
 Test;<Request ID="21" Action="WRITE"><Connection Source="[215.5, 21.0, 0.0]" Destination="HW_REFUSED.IN" /></Request>
 Test;<Request ID="22" Action="WRITE"><Connection Source="REAL#50.0" Destination="DUTY_EQ.IN2" /></Request>
 Test;<Request ID="23" Action="WRITE"><Connection Source="REAL#0.0" Destination="COOL_EQ.IN2" /></Request>
-Test;<Request ID="24" Action="WRITE"><Connection Source="'input cell 0 is 215.5, not a multiple of 1, the step its function declared'" Destination="WORDS_EQ.IN2" /></Request>
+Test;<Request ID="24" Action="WRITE"><Connection Source="STRING#'input cell 0 is 215.5, not a multiple of 1, the step its function declared'" Destination="WORDS_EQ.IN2" /></Request>
 Test;<Request ID="25" Action="CREATE"><Connection Source="START.COLD" Destination="HW.INIT" /></Request>
 Test;<Request ID="26" Action="CREATE"><Connection Source="HW.INITO" Destination="LOADED.REQ" /></Request>
 Test;<Request ID="27" Action="CREATE"><Connection Source="LOADED.CNF" Destination="HW.REQ" /></Request>
