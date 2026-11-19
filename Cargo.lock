@@ -358,6 +358,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "handwired-rs-run-c"
+version = "0.1.0"
+dependencies = [
+ "handwired-rs-run",
+]
+
+[[package]]
 name = "handwired-rs-sign"
 version = "0.1.0"
 dependencies = [

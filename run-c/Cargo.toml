@@ -1,0 +1,30 @@
+[package]
+name = "handwired-rs-run-c"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/mighty840/handwired-rs"
+keywords = ["circuit", "no-std", "embedded", "ffi", "plc"]
+categories = ["no-std", "embedded", "external-ffi-bindings"]
+description = "A C interface to handwired-rs-run, for PLC runtimes and firmware written in C or C++: no allocation, caller-owned storage"
+readme = "README.md"
+# Not on crates.io until a release says so.
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["std"]
+# Links std, which handles panics; a hosted program (a PLC runtime on Linux) wants this.
+std = []
+# For a no_std static library in C firmware: a panic halts. The runner never panics on a parsed program (see its
+# Kani proofs), but a static library needs a handler to link.
+panic-halt = []
+
+[dependencies]
+handwired-rs-run = { path = "../run" }
+
+[dev-dependencies]
+handwired-rs-run = { path = "../run", features = ["alloc"] }

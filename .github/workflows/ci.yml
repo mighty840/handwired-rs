@@ -31,6 +31,12 @@ jobs:
         run: cargo test -p handwired-rs-run --features std
       - name: Test signatures with std (the handwired-sign command)
         run: cargo test -p handwired-rs-sign --features std
+      - name: Run the C interface from C (run-c)
+        run: |
+          cargo build --release -p handwired-rs-run-c
+          cc -std=c99 -Wall -Wextra -Werror -pedantic -Irun-c/include run-c/tests/smoke.c \
+            target/release/libhandwired_rs_run_c.a -lm -lpthread -ldl -o /tmp/smoke
+          /tmp/smoke meta-handwired/recipes-handwired/handwired-heater/files/heater.hwc
       - name: Check the pinned signature and log with other Ed25519 and SHA-256 implementations
         run: |
           sudo apt-get install -y python3-cryptography
@@ -89,6 +95,7 @@ jobs:
           for target in thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imc-unknown-none-elf; do
             cargo build -p handwired-rs-run --lib --release --target "$target"
             cargo build -p handwired-rs-sign --lib --release --features log --target "$target"
+            cargo build -p handwired-rs-run-c --lib --release --no-default-features --features panic-halt --target "$target"
           done
 
   kani:
@@ -133,6 +140,16 @@ jobs:
             -kernel target/thumbv6m-none-eabi/release/handwired-run-check | tee m0.txt
           grep -q "=== 8 passed, 0 failed ===" m3.txt
           grep -q "=== 8 passed, 0 failed ===" m0.txt
+
+  forte:
+    name: Run the runner as a 4diac FORTE function block
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build FORTE 3.3.0 with HANDWIRED_RUN and run its test application
+        run: JOBS=4 plc/4diac/build.sh /tmp/4diac
 
   package:
     name: Package the macro crate

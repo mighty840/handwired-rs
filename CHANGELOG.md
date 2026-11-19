@@ -6,6 +6,13 @@
   source cells, trained with Adam through `backpropagate_reference` until one rectangle per photo matches a sketch,
   with a penalty that pulls nearly aligned photo edges onto one line and frames taken back when they raise the loss.
   The three preset sketches come to rest as the demo's do.
+- handwired-rs-run-c (`run-c/`, not published): a C interface to the runner, for PLC runtimes and firmware in C or
+  C++. `include/handwired_run.h`, caller-owned storage and no allocation, the runner's codes and error words. It
+  builds hosted or `no_std` (`--features panic-halt`). Tested against the Rust runner on every accepted input of the
+  heater program, and from C.
+- `plc/4diac`: `HANDWIRED_RUN`, a function block for Eclipse 4diac FORTE 3.3 built on it. INIT loads and checks a
+  program file, REQ runs it on an array of REAL cells, and QO and STATUS report refusals. Includes the 4diac IDE type,
+  `build.sh`, and a test application that CI runs in FORTE.
 - handwired-rs-run: a gather's selected position and sum of bits are added in f32, not f64, so no work that depends
   on the values uses f64, which an FPU without f64 (Cortex-M33, M4F) does in software in a time that depends on the
   operands. Results are unchanged for one-hot groups of 0/1 bits; on a Cortex-M33 `run` no longer calls the software

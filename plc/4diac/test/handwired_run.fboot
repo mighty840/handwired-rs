@@ -1,0 +1,52 @@
+;<Request ID="1" Action="CREATE"><FB Name="Test" Type="iec61499::system::EMB_RES" /></Request>
+Test;<Request ID="2" Action="CREATE"><FB Name="HW" Type="handwired::HANDWIRED_RUN" /></Request>
+Test;<Request ID="3" Action="CREATE"><FB Name="HW_REFUSED" Type="handwired::HANDWIRED_RUN" /></Request>
+Test;<Request ID="4" Action="CREATE"><FB Name="SPLIT" Type="eclipse4diac::convert::ARRAY2VALUES_16_REAL" /></Request>
+Test;<Request ID="5" Action="CREATE"><FB Name="DUTY_EQ" Type="iec61131::comparison::F_EQ" /></Request>
+Test;<Request ID="6" Action="CREATE"><FB Name="COOL_EQ" Type="iec61131::comparison::F_EQ" /></Request>
+Test;<Request ID="7" Action="CREATE"><FB Name="WORDS_EQ" Type="iec61131::comparison::F_EQ" /></Request>
+Test;<Request ID="8" Action="CREATE"><FB Name="REFUSED" Type="iec61131::bitwiseOperators::F_NOT" /></Request>
+Test;<Request ID="9" Action="CREATE"><FB Name="LOADED" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="10" Action="CREATE"><FB Name="RAN" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="11" Action="CREATE"><FB Name="DUTY" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="12" Action="CREATE"><FB Name="COOL" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="13" Action="CREATE"><FB Name="REFUSAL" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="14" Action="CREATE"><FB Name="WORDS" Type="eclipse4diac::utils::TEST_CONDITION" /></Request>
+Test;<Request ID="15" Action="CREATE"><FB Name="END" Type="eclipse4diac::utils::STEST_END" /></Request>
+Test;<Request ID="16" Action="WRITE"><Connection Source="TRUE" Destination="HW.QI" /></Request>
+Test;<Request ID="17" Action="WRITE"><Connection Source="'heater.hwc'" Destination="HW.PATH" /></Request>
+Test;<Request ID="18" Action="WRITE"><Connection Source="[180.0, 21.0, 1.0]" Destination="HW.IN" /></Request>
+Test;<Request ID="19" Action="WRITE"><Connection Source="TRUE" Destination="HW_REFUSED.QI" /></Request>
+Test;<Request ID="20" Action="WRITE"><Connection Source="'heater.hwc'" Destination="HW_REFUSED.PATH" /></Request>
+Test;<Request ID="21" Action="WRITE"><Connection Source="[215.5, 21.0, 0.0]" Destination="HW_REFUSED.IN" /></Request>
+Test;<Request ID="22" Action="WRITE"><Connection Source="REAL#50.0" Destination="DUTY_EQ.IN2" /></Request>
+Test;<Request ID="23" Action="WRITE"><Connection Source="REAL#0.0" Destination="COOL_EQ.IN2" /></Request>
+Test;<Request ID="24" Action="WRITE"><Connection Source="'input cell 0 is 215.5, not a multiple of 1, the step its function declared'" Destination="WORDS_EQ.IN2" /></Request>
+Test;<Request ID="25" Action="CREATE"><Connection Source="START.COLD" Destination="HW.INIT" /></Request>
+Test;<Request ID="26" Action="CREATE"><Connection Source="HW.INITO" Destination="LOADED.REQ" /></Request>
+Test;<Request ID="27" Action="CREATE"><Connection Source="LOADED.CNF" Destination="HW.REQ" /></Request>
+Test;<Request ID="28" Action="CREATE"><Connection Source="HW.CNF" Destination="RAN.REQ" /></Request>
+Test;<Request ID="29" Action="CREATE"><Connection Source="RAN.CNF" Destination="SPLIT.REQ" /></Request>
+Test;<Request ID="30" Action="CREATE"><Connection Source="SPLIT.CNF" Destination="DUTY_EQ.REQ" /></Request>
+Test;<Request ID="31" Action="CREATE"><Connection Source="DUTY_EQ.CNF" Destination="DUTY.REQ" /></Request>
+Test;<Request ID="32" Action="CREATE"><Connection Source="DUTY.CNF" Destination="COOL_EQ.REQ" /></Request>
+Test;<Request ID="33" Action="CREATE"><Connection Source="COOL_EQ.CNF" Destination="COOL.REQ" /></Request>
+Test;<Request ID="34" Action="CREATE"><Connection Source="COOL.CNF" Destination="HW_REFUSED.INIT" /></Request>
+Test;<Request ID="35" Action="CREATE"><Connection Source="HW_REFUSED.INITO" Destination="HW_REFUSED.REQ" /></Request>
+Test;<Request ID="36" Action="CREATE"><Connection Source="HW_REFUSED.CNF" Destination="REFUSED.REQ" /></Request>
+Test;<Request ID="37" Action="CREATE"><Connection Source="REFUSED.CNF" Destination="REFUSAL.REQ" /></Request>
+Test;<Request ID="38" Action="CREATE"><Connection Source="REFUSAL.CNF" Destination="WORDS_EQ.REQ" /></Request>
+Test;<Request ID="39" Action="CREATE"><Connection Source="WORDS_EQ.CNF" Destination="WORDS.REQ" /></Request>
+Test;<Request ID="40" Action="CREATE"><Connection Source="WORDS.CNF" Destination="END.REQ" /></Request>
+Test;<Request ID="41" Action="CREATE"><Connection Source="HW.QO" Destination="LOADED.check" /></Request>
+Test;<Request ID="42" Action="CREATE"><Connection Source="HW.QO" Destination="RAN.check" /></Request>
+Test;<Request ID="43" Action="CREATE"><Connection Source="HW.OUT" Destination="SPLIT.IN" /></Request>
+Test;<Request ID="44" Action="CREATE"><Connection Source="SPLIT.OUT_1" Destination="DUTY_EQ.IN1" /></Request>
+Test;<Request ID="45" Action="CREATE"><Connection Source="SPLIT.OUT_2" Destination="COOL_EQ.IN1" /></Request>
+Test;<Request ID="46" Action="CREATE"><Connection Source="DUTY_EQ.OUT" Destination="DUTY.check" /></Request>
+Test;<Request ID="47" Action="CREATE"><Connection Source="COOL_EQ.OUT" Destination="COOL.check" /></Request>
+Test;<Request ID="48" Action="CREATE"><Connection Source="HW_REFUSED.QO" Destination="REFUSED.IN" /></Request>
+Test;<Request ID="49" Action="CREATE"><Connection Source="REFUSED.OUT" Destination="REFUSAL.check" /></Request>
+Test;<Request ID="50" Action="CREATE"><Connection Source="HW_REFUSED.STATUS" Destination="WORDS_EQ.IN1" /></Request>
+Test;<Request ID="51" Action="CREATE"><Connection Source="WORDS_EQ.OUT" Destination="WORDS.check" /></Request>
+Test;<Request ID="52" Action="START"/>

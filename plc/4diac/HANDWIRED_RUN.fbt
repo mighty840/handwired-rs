@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FBType Name="HANDWIRED_RUN" Comment="Runs a program file exported by handwired-rs: the same operations in the same order on every input, refusing inputs outside its function's ranges, grids and types">
+	<Identification Description="SPDX-License-Identifier: MIT">
+	</Identification>
+	<VersionInfo Organization="handwired-rs" Version="0.1" Author="handwired-rs" Date="2026-11-19">
+	</VersionInfo>
+	<CompilerInfo packageName="handwired">
+	</CompilerInfo>
+	<InterfaceList>
+		<EventInputs>
+			<Event Name="INIT" Type="EInit" Comment="QI = TRUE: read and check the program file at PATH; QI = FALSE: unload it">
+				<With Var="QI"/>
+				<With Var="PATH"/>
+			</Event>
+			<Event Name="REQ" Type="Event" Comment="Run the program on the first cells of IN">
+				<With Var="QI"/>
+				<With Var="IN"/>
+			</Event>
+		</EventInputs>
+		<EventOutputs>
+			<Event Name="INITO" Type="EInit" Comment="Loaded (QO = TRUE) or not, and why">
+				<With Var="QO"/>
+				<With Var="STATUS"/>
+			</Event>
+			<Event Name="CNF" Type="Event" Comment="Ran (QO = TRUE, OUT written) or refused (QO = FALSE, OUT unchanged)">
+				<With Var="QO"/>
+				<With Var="STATUS"/>
+				<With Var="OUT"/>
+			</Event>
+		</EventOutputs>
+		<InputVars>
+			<VarDeclaration Name="QI" Type="BOOL" Comment="Event input qualifier"/>
+			<VarDeclaration Name="PATH" Type="STRING" Comment="The program file (.hwc), relative to FORTE's working directory"/>
+			<VarDeclaration Name="IN" Type="REAL" ArraySize="16" Comment="Input cells; the program uses as many as it has inputs"/>
+		</InputVars>
+		<OutputVars>
+			<VarDeclaration Name="QO" Type="BOOL" Comment="Event output qualifier: FALSE when not loaded or refused"/>
+			<VarDeclaration Name="STATUS" Type="STRING" Comment="OK, the program's name and size after INIT, or why it was refused"/>
+			<VarDeclaration Name="OUT" Type="REAL" ArraySize="16" Comment="Output cells; the program writes as many as it has outputs"/>
+		</OutputVars>
+	</InterfaceList>
+</FBType>
