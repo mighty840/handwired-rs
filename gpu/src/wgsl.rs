@@ -327,8 +327,8 @@ fn write_with(
         read_row: vec![0; program.value_count],
         shared,
     };
-    for position in 0..source_size {
-        writer.values[position] = Some(Value::Source(position));
+    for (position, value) in writer.values.iter_mut().enumerate().take(source_size) {
+        *value = Some(Value::Source(position));
     }
     let mut available = source_size;
     let mut operation_count = 0;
